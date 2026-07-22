@@ -1,0 +1,29 @@
+# Build artifacts
+dist/
+.cache/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test projects (development)
+test-*/
+tmp/
+
+# Note: .elmoorx/ is intentionally NOT ignored
+# because it contains the framework needed to run.
+# Each project is self-contained.
