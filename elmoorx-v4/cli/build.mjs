@@ -69,7 +69,15 @@ export async function buildProject(rootDir, options = {}) {
   // 6) توليد ملفات خاصة بالهدف
   await generateTargetFiles(target, outPath, rootDir);
 
-  // 7) إحصائيات
+  // 7) توليد ملفات PWA
+  console.log(`  │ توليد ملفات PWA...`);
+  const { buildPWAFiles } = await import('../pwa/index.mjs');
+  buildPWAFiles(outPath, {
+    name: rootDir.split('/').pop() || 'Elmoorx App',
+    startUrl: '/',
+  });
+
+  // 8) إحصائيات
   const stats = computeStats(outPath);
   console.log(`  ─────────────────────────────────────`);
   console.log(`  │ ✓ مكتمل`);

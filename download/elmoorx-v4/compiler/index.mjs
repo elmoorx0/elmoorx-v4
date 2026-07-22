@@ -96,11 +96,77 @@ export function stripTypes(source) {
 }
 
 function removeTypeDeclarations(code) {
-  // interface X {...} — احذف الكتلة كاملة
-  code = code.replace(/\binterface\s+\w+[^{]*\{[\s\S]*?\}\s*(?=\n|$|[;])/g, '');
-  // type X = ...;
-  code = code.replace(/^\s*type\s+\w+\s*(?:<[^>]*>)?\s*=\s*[\s\S]*?;?\s*$/gm, '');
-  return code;
+  // إزالة interface و type declarations فقط عندما تكون خارج strings
+  // نمر على الكود حرفاً بحرف ونتتبع strings
+  let result = '';
+  let i = 0;
+  const n = code.length;
+  let inString = null;
+
+  while (i < n) {
+    const ch = code[i];
+
+    // تتبع strings
+    if (inString) {
+      result += ch;
+      if (ch === '\\') { result += code[i + 1]; i += 2; continue; }
+      if (ch === inString) inString = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inString = ch;
+      result += ch;
+      i++;
+      continue;
+    }
+
+    // تحقق من interface keyword خارج strings
+    if (code.slice(i, i + 10) === 'interface ' && (i === 0 || !/\w/.test(code[i - 1]))) {
+      // ابحث عن نهاية الكتلة {
+      let braceStart = code.indexOf('{', i);
+      if (braceStart === -1) { result += ch; i++; continue; }
+      let depth = 1;
+      let j = braceStart + 1;
+      while (j < n && depth > 0) {
+        if (code[j] === '{') depth++;
+        else if (code[j] === '}') depth--;
+        j++;
+      }
+      i = j;
+      continue;
+    }
+
+    // type X = ...;  (في بداية سطر)
+    if (i === 0 || code[i - 1] === '\n') {
+      const typeMatch = code.slice(i).match(/^type\s+\w+\s*(?:<[^>]*>)?\s*=/);
+      if (typeMatch) {
+        // ابحث عن نهاية السطر أو ;
+        let j = i + typeMatch[0].length;
+        let depth = 0;
+        let str = null;
+        while (j < n) {
+          if (str) {
+            if (code[j] === '\\') { j += 2; continue; }
+            if (code[j] === str) str = null;
+            j++;
+            continue;
+          }
+          if (code[j] === '"' || code[j] === "'" || code[j] === '`') { str = code[j]; j++; continue; }
+          if (code[j] === '{' || code[j] === '(' || code[j] === '[') depth++;
+          if (code[j] === '}' || code[j] === ')' || code[j] === ']') depth--;
+          if (depth === 0 && (code[j] === ';' || code[j] === '\n')) { j++; break; }
+          j++;
+        }
+        i = j;
+        continue;
+      }
+    }
+
+    result += ch;
+    i++;
+  }
+  return result;
 }
 
 function removeTypeAnnotations(code) {
@@ -289,8 +355,7 @@ function removeAccessibilityModifiers(code) {
  * يدعم: عناصر، مكونات، fragments، تعابير، spreads، children.
  */
 export function transformJSX(code, options = {}) {
-  const pragma = options.pragma || 'h';
-  const fragmentPragma = options.fragmentPragma || 'Fragment';
+  const opts = { pragma: 'h', fragmentPragma: 'Fragment', ...options };
   let result = '';
   let i = 0;
   const n = code.length;
@@ -322,7 +387,7 @@ export function transformJSX(code, options = {}) {
 
     // اكتشاف <Tag — ليس === ولا <= ولا -> ولا أرقام
     if (ch === '<' && isJsxStart(code, i)) {
-      const parsed = parseJsxElement(code, i);
+      const parsed = parseJsxElement(code, i, opts);
       if (parsed) {
         result += parsed.expression;
         i = parsed.endIndex;
@@ -355,7 +420,9 @@ function isJsxStart(code, i) {
   return false;
 }
 
-function parseJsxElement(code, start) {
+function parseJsxElement(code, start, opts = {}) {
+  const pragma = opts.pragma || 'h';
+  const fragmentPragma = opts.fragmentPragma || 'Fragment';
   let i = start;
   // <Tag ...>
   if (code[i] !== '<') return null;
@@ -365,18 +432,15 @@ function parseJsxElement(code, start) {
   if (isClosing) i++;
   // fragment: <> or </>
   if (code[i] === '>') {
-    // <>...</>  →  Fragment
-    // ابحث عن </>
     if (isClosing) {
-      return { expression: '', endIndex: i + 1 }; // </> - skip
+      return { expression: '', endIndex: i + 1 };
     }
-    // ابحث عن المحتوى ثم </>
     const closeIdx = code.indexOf('</>', i + 1);
     if (closeIdx === -1) return null;
     const inner = code.slice(i + 1, closeIdx);
-    const transformedInner = transformJSX(inner);
+    const transformedInner = transformJSX(inner, opts);
     return {
-      expression: `${'FragmentPragma'}({ children: [${wrapChildren(transformedInner)}] })`,
+      expression: `${fragmentPragma}({ children: [${wrapChildren(transformedInner)}] })`,
       endIndex: closeIdx + 3,
     };
   }
@@ -451,14 +515,13 @@ function parseJsxElement(code, start) {
   else if (code[i] === '>') i++;
   else return null;
 
-  let children = [];
+  let children = '';
   if (!selfClosing && !isClosing) {
     // اقرأ children حتى </tag>
     const closeTag = `</${tag}>`;
     let depth = 1;
     let childStart = i;
     while (i < code.length && depth > 0) {
-      // ابحث عن opening أو closing tag
       if (code[i] === '<' && code.slice(i, i + tag.length + 1) === `<${tag}` && isJsxStart(code, i)) {
         depth++;
       }
@@ -469,11 +532,9 @@ function parseJsxElement(code, start) {
       i++;
     }
     const childContent = code.slice(childStart, i);
-    // ابحث عن </tag>
     i += closeTag.length;
     // حلّل children — تحويل الـ JSX المتداخل
-    const transformedChildren = transformJSX(childContent);
-    children = transformedChildren;
+    children = transformJSX(childContent, opts);
   }
 
   // بناء الاستدعاء h(...)
@@ -510,9 +571,9 @@ function findMatchingBrace(code, start) {
 }
 
 function wrapChildren(children) {
-  // children قد يكون نصاً مع تعابير مختلطة
-  // نُحوّلها إلى مصفوفة من الأجزاء
-  if (!children || !children.trim()) return '';
+  if (!children) return '';
+  if (typeof children !== 'string') return '';
+  if (!children.trim()) return '';
   const parts = [];
   let text = '';
   let i = 0;
@@ -523,7 +584,6 @@ function wrapChildren(children) {
   while (i < children.length) {
     const ch = children[i];
     if (!inExpr && ch === '{' && children[i + 1] !== '"' && children[i + 1] !== "'") {
-      // push text
       if (text.trim()) parts.push(JSON.stringify(text.trim()));
       text = '';
       inExpr = true;
@@ -569,11 +629,30 @@ export function compile(source, filename = '<unknown>') {
 }
 
 function rewriteImports(code, filename) {
-  // استبدل @elmoorx/runtime بـ /.elmoorx/runtime/core.mjs
-  // بسيط وفعال: فقط استبدل مسار الـ module
-  return code
-    .replace(/from\s+['"]@elmoorx\/runtime['"]/g, "from '/.elmoorx/runtime/core.mjs'")
-    .replace(/from\s+['"]@elmoorx\/(\w+)['"]/g, "from '/.elmoorx/vendor/$1.mjs'");
+  // استبدل @elmoorx/* بالمسارات الصحيحة
+  // runtime → /.elmoorx/runtime/core.mjs
+  // router → /.elmoorx/router/index.mjs
+  // ssr → /.elmoorx/ssr/index.mjs
+  // i18n → /.elmoorx/i18n/index.mjs
+  // http → /.elmoorx/http/index.mjs
+  // testing → /.elmoorx/testing/index.mjs
+  // adapters → /.elmoorx/adapters/index.mjs
+  const modulePaths = {
+    runtime: 'runtime/core.mjs',
+    router: 'router/index.mjs',
+    ssr: 'ssr/index.mjs',
+    i18n: 'i18n/index.mjs',
+    http: 'http/index.mjs',
+    testing: 'testing/index.mjs',
+    adapters: 'adapters/index.mjs',
+  };
+  for (const [pkg, path] of Object.entries(modulePaths)) {
+    const regex = new RegExp(`from\\s+['"]@elmoorx/${pkg}['"]`, 'g');
+    code = code.replace(regex, `from '/.elmoorx/${path}'`);
+  }
+  // أي @elmoorx/ آخر → vendor
+  code = code.replace(/from\s+['"]@elmoorx\/(\w+)['"]/g, "from '/.elmoorx/vendor/$1.mjs'");
+  return code;
 }
 
 export function compileFile(inputPath, outputPath) {

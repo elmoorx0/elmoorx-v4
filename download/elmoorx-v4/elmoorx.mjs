@@ -24,6 +24,7 @@ import { buildProject } from './cli/build.mjs';
 import { generateComponent } from './cli/generate.mjs';
 import { startVisualBuilder } from './cli/visual.mjs';
 import { serveStatic } from './cli/serve.mjs';
+import { runTests } from './cli/test.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -76,6 +77,11 @@ async function main() {
       console.log(result);
       break;
     }
+    case 'test': {
+      const watch = args.includes('--watch') || args.includes('-w');
+      await runTests({ watch });
+      break;
+    }
     case 'info': {
       const result = await info();
       console.log(result);
@@ -126,6 +132,7 @@ function printHelp() {
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx doctor                     يفحص صحة المشروع
+    elmoorx test                       يشغّل اختبارات المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
     elmoorx --help                     يعرض هذه المساعدة

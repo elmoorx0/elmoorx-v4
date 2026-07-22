@@ -21,6 +21,7 @@
 ### 2. ⚡ HMR صفر-زمني (< 1ms)
 - WebSocket مباشر بدون Vite/Webpack/esbuild
 - تحديث فوري عند حفظ الملف
+- **soft reload** — استبدال الكود بدون refresh
 - حفظ الـ state عبر التحديثات
 - عرض الأخطاء كـ overlay شفاف
 
@@ -47,6 +48,44 @@
 - **لا esbuild** — مُجمّع JSX داخلي
 - **لا tsx/tsc** — يستخدم Node 22+ `--experimental-strip-types`
 - سريع جداً: آلاف الأسطر في ميلي ثانية
+
+### 6. 🧭 Router كامل
+- File-based routing (مثل Next.js)
+- Dynamic segments: `/users/:id`
+- Catch-all: `/post/*slug`
+- Layouts متداخلة
+- Loaders للـ data fetching
+- Lazy loading تلقائي
+- Hash routing و History API
+
+### 7. 🌍 i18n مدمج
+- عربي/إنجليزي افتراضياً
+- RTL/LTR تلقائي
+- pluralization عبر Intl.PluralRules
+- تنسيق الأرقام والتواريخ عبر Intl
+- Reactive — التغيير فوري
+
+### 8. 🔒 HTTP Client + Auth
+- fetch wrapper مع retry + timeout
+- Request/response interceptors
+- Auth helpers (login, logout, refresh)
+- CSRF token تلقائي
+- localStorage + cookies helpers
+- Query cache (مثل React Query)
+
+### 9. 🧪 Testing Framework مدمج
+- `describe` / `it` / `expect`
+- matchers شاملة (toBe, toEqual, toContain, toThrow, إلخ)
+- before/after hooks
+- mock/spy
+- async tests
+- colored output
+
+### 10. 📄 SSR (Server-Side Rendering)
+- `renderToString` للتحويل الكامل
+- `renderToStream` للـ streaming
+- Head management (title, meta, link)
+- Initial state injection للـ hydration
 
 ## 🚀 البدء السريع
 
@@ -80,6 +119,7 @@ cd elmoorx-v4-main
 ./elmoorx generate "<description>"   # يولّد مكون من وصف
 ./elmoorx visual [--port=8080]       # يفتح Visual Builder
 ./elmoorx static <dir>               # يخدم ملفات ثابتة
+./elmoorx test                       # يشغّل الاختبارات
 ./elmoorx doctor                     # يفحص صحة المشروع
 ./elmoorx info                       # يعرض معلومات البيئة
 ./elmoorx --version                  # يطبع الإصدار
@@ -154,6 +194,12 @@ my-app/
 ├── .elmoorx/              # الإطار (مُضمّن، 146KB)
 │   ├── runtime/           # signals, store, islands, security
 │   ├── compiler/          # TS + JSX compiler داخلي
+│   ├── router/            # نظام التوجيه
+│   ├── i18n/              # الترجمات
+│   ├── http/              # HTTP client + auth
+│   ├── ssr/               # Server-Side Rendering
+│   ├── testing/           # إطار اختبار
+│   ├── adapters/          # Edge + Native adapters
 │   ├── cli/               # CLI commands
 │   ├── vendor/            # WebSocket shim و غيرها
 │   └── elmoorx.mjs        # نقطة دخول CLI
@@ -168,6 +214,25 @@ my-app/
 ├── elmoorx.config.mjs     # إعدادات
 └── package.json           # للتوافق مع IDE فقط
 ```
+
+## 📚 أمثلة
+
+- [`examples/demo.tsx`](./examples/demo.tsx) — demo شامل للـ signals + store + islands + security
+- [`examples/full-app.tsx`](./examples/full-app.tsx) — تطبيق كامل (counter + todo + store + security)
+- [`examples/blog/`](./examples/blog/) — مدونة كاملة مع routing + i18n + signals
+
+## 📦 Packages المدمجة
+
+| Package | الوصف |
+|---------|-------|
+| `@elmoorx/runtime` | signals, store, islands, security, h(), lifecycle, context |
+| `@elmoorx/compiler` | TS type stripper + JSX transformer |
+| `@elmoorx/router` | file-based + programmatic routing |
+| `@elmoorx/ssr` | renderToString + renderToStream + Head |
+| `@elmoorx/i18n` | ترجمات + RTL + تنسيق |
+| `@elmoorx/http` | fetch wrapper + auth + storage + useQuery |
+| `@elmoorx/testing` | describe/it/expect + mock/spy |
+| `@elmoorx/adapters` | Edge + Native adapters (6 منصات) |
 
 ## 🏗️ المعمارية
 

@@ -416,12 +416,21 @@ export const SECURITY_HEADERS = {
 
 export function generateCsrfToken() {
   const arr = new Uint8Array(32);
-  const cryptoObj = globalThis.crypto
-    || (typeof require !== 'undefined' ? require('node:crypto').webcrypto : null);
-  if (cryptoObj) {
-    cryptoObj.getRandomValues(arr);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(arr);
+  } else if (typeof globalThis !== 'undefined' && globalThis.process?.versions?.node) {
+    // Node.js — استخدم node:crypto متى ما توفر (lazy)
+    try {
+      const nodeCrypto = globalThis[Symbol.for('node:crypto')] || (() => {
+        try { return require('node:crypto'); } catch { return null; }
+      })();
+      if (nodeCrypto?.webcrypto?.getRandomValues) nodeCrypto.webcrypto.getRandomValues(arr);
+      else if (nodeCrypto?.randomFillSync) nodeCrypto.randomFillSync(arr);
+      else for (let i = 0; i < 32; i++) arr[i] = Math.floor(Math.random() * 256);
+    } catch {
+      for (let i = 0; i < 32; i++) arr[i] = Math.floor(Math.random() * 256);
+    }
   } else {
-    // fallback — غير آمن لكنه يعمل في البيئات القديمة
     for (let i = 0; i < 32; i++) arr[i] = Math.floor(Math.random() * 256);
   }
   return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');

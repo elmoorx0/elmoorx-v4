@@ -36,10 +36,17 @@ export async function createProject(name, template = 'default') {
   mkdirSync(elmoorxDir, { recursive: true });
 
   // نسخ المجلدات الأساسية
-  copyDirSync(join(FRAMEWORK_ROOT, 'runtime'), join(elmoorxDir, 'runtime'));
-  copyDirSync(join(FRAMEWORK_ROOT, 'compiler'), join(elmoorxDir, 'compiler'));
-  copyDirSync(join(FRAMEWORK_ROOT, 'cli'), join(elmoorxDir, 'cli'));
-  copyDirSync(join(FRAMEWORK_ROOT, 'vendor'), join(elmoorxDir, 'vendor'));
+  const packagesToCopy = [
+    'runtime', 'compiler', 'cli', 'vendor',
+    'router', 'ssr', 'i18n', 'http', 'testing', 'adapters',
+    'store', 'forms', 'animation', 'database', 'realtime', 'pwa',
+  ];
+  for (const pkg of packagesToCopy) {
+    const src = join(FRAMEWORK_ROOT, pkg);
+    if (existsSync(src)) {
+      copyDirSync(src, join(elmoorxDir, pkg));
+    }
+  }
   copyFileSync(join(FRAMEWORK_ROOT, 'elmoorx.mjs'), join(elmoorxDir, 'elmoorx.mjs'));
 
   // إنشاء elmoorx shell script في جذر المشروع

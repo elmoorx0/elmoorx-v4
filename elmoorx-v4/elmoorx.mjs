@@ -24,6 +24,9 @@ import { buildProject } from './cli/build.mjs';
 import { generateComponent } from './cli/generate.mjs';
 import { startVisualBuilder } from './cli/visual.mjs';
 import { serveStatic } from './cli/serve.mjs';
+import { runTests } from './cli/test.mjs';
+import { addComponent } from './cli/add.mjs';
+import { runBenchmarks } from './cli/bench.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -76,6 +79,26 @@ async function main() {
       console.log(result);
       break;
     }
+    case 'test': {
+      const watch = args.includes('--watch') || args.includes('-w');
+      await runTests({ watch });
+      break;
+    }
+    case 'add': {
+      const name = args.find(a => !a.startsWith('--'));
+      if (!name) {
+        console.error('الاستخدام: elmoorx add <component>');
+        console.error('مثال: elmoorx add navbar');
+        process.exit(1);
+      }
+      await addComponent(name);
+      break;
+    }
+    case 'bench':
+    case 'benchmark': {
+      await runBenchmarks();
+      break;
+    }
     case 'info': {
       const result = await info();
       console.log(result);
@@ -126,6 +149,9 @@ function printHelp() {
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx doctor                     يفحص صحة المشروع
+    elmoorx test                       يشغّل اختبارات المشروع
+    elmoorx add <component>            يضيف مكون جاهز للمشروع
+    elmoorx bench                      يقيس أداء الإطار
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
     elmoorx --help                     يعرض هذه المساعدة

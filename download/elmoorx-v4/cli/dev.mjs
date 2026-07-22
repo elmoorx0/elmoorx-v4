@@ -87,16 +87,51 @@ export async function createServer({ rootDir, port = 3000 }) {
     const start = performance.now();
     clearCompileCache();
     const relPath = relativePath(filePath, rootDir);
-    // في الإنتاج الحقيقي: نعيد تجميع الوحدة ونرسل الـ diff
-    // هنا نرسل إشعار تحديث بسيط
+    const url = '/' + relPath.replace(/\\/g, '/').replace(/^\//, '');
+
+    let newCode = null;
+    let hadError = false;
+    let errorMsg = null;
+
+    try {
+      // اقرأ واجمع الكود الجديد
+      const source = readFileSync(filePath, 'utf8');
+      const ext = extname(filePath).toLowerCase();
+      if (ext === '.ts' || ext === '.tsx' || ext === '.mtsx') {
+        newCode = compile(source, filePath);
+      } else {
+        newCode = source;
+      }
+    } catch (err) {
+      hadError = true;
+      errorMsg = err.message;
+    }
+
     const took = Math.round(performance.now() - start);
+
+    if (hadError) {
+      broadcast({
+        type: 'error',
+        id: relPath,
+        message: errorMsg,
+        stack: '',
+        took,
+        timestamp: Date.now(),
+      });
+      console.log(`  ✗ خطأ تجميع: ${relPath} — ${errorMsg}`);
+      return;
+    }
+
+    // أرسل الكود الجديد للعميل
     broadcast({
       type: 'update',
       id: relPath,
+      url,
+      code: newCode,
       took,
       timestamp: Date.now(),
     });
-    console.log(`  ✦ HMR تحديث: ${relPath} (${took}ms)`);
+    console.log(`  ✦ HMR تحديث: ${relPath} (${took}ms, ${newCode.length}b)`);
   }
 
   httpServer.listen(port, () => {
@@ -130,7 +165,28 @@ async function handleRequest(req, res, rootDir) {
     }
   }
 
-  // vendor packages
+  // modules: router, ssr, i18n, http, testing, adapters
+  // يدعم /router/ و /.elmoorx/router/ (وكذلك /vendor/router/ للتوافق القديم)
+  const moduleMatch = path.match(/^\/(?:\.elmoorx\/)?(router|ssr|i18n|http|testing|adapters)\/?(.*)$/);
+  if (moduleMatch) {
+    const [, moduleName, rest] = moduleMatch;
+    const subPath = rest ? `${moduleName}/${rest}` : `${moduleName}/index.mjs`;
+    const file = join(RUNTIME_DIR, subPath);
+    if (existsSync(file)) {
+      res.writeHead(200, { 'Content-Type': 'application/javascript' });
+      res.end(readFileSync(file, 'utf8'));
+      return;
+    }
+    // try index.mjs
+    const indexFile = join(RUNTIME_DIR, moduleName, 'index.mjs');
+    if (existsSync(indexFile)) {
+      res.writeHead(200, { 'Content-Type': 'application/javascript' });
+      res.end(readFileSync(indexFile, 'utf8'));
+      return;
+    }
+  }
+
+  // vendor packages (للحزم الإضافية فقط)
   if (path.startsWith('/vendor/') || path.startsWith('/.elmoorx/vendor/')) {
     const subPath = path.replace(/^\/(\.elmoorx\/)?vendor\//, 'vendor/');
     const file = join(RUNTIME_DIR, subPath);
@@ -139,7 +195,6 @@ async function handleRequest(req, res, rootDir) {
       res.end(readFileSync(file, 'utf8'));
       return;
     }
-    // try compiling from .ts
     const tsFile = file.replace(/\.mjs$/, '.ts');
     if (existsSync(tsFile)) {
       const src = readFileSync(tsFile, 'utf8');
@@ -327,29 +382,57 @@ let ws;
 let reconnectTimer;
 const hotModules = new Map();
 const disposeHandlers = new Map();
+const moduleCache = new Map(); // url → compiled code
 
 function connect() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(\`\${protocol}//\${location.host}/__hmr__\`);
   ws.onopen = () => { console.log('%c✦ HMR متصل', 'color:#0ea5e9;font-weight:bold;'); };
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
     if (msg.type === 'connected') return;
     if (msg.type === 'update') {
+      // خزّن الكود الجديد
+      moduleCache.set(msg.url, msg.code);
+
+      // ابحث عن handlers مسجّلة
       const handlers = hotModules.get(msg.id);
-      if (handlers) handlers.forEach(h => h(msg));
-      else location.reload();
+      if (handlers) {
+        handlers.forEach(h => {
+          try { h(msg); } catch (e) { console.error('[HMR] فشل التحديث:', e); }
+        });
+      } else {
+        // لا handlers — حاول التحديث الناعم (soft refresh)
+        // أعد تحميل الوحدة عبر import URL جديد
+        await softReload(msg.url, msg.code);
+      }
       console.log('%c✦ HMR تحديث: ' + msg.id + ' (' + msg.took + 'ms)', 'color:#10b981;');
     } else if (msg.type === 'reload') {
       location.reload();
     } else if (msg.type === 'error') {
-      showOverlay(msg.message, msg.stack);
+      showOverlay(msg.message, msg.stack || '');
+      console.error('%c✦ خطأ تجميع: ' + msg.message, 'color:#ef4444;font-weight:bold;');
     }
   };
   ws.onclose = () => {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 1000);
   };
+}
+
+async function softReload(url, code) {
+  try {
+    // أنشئ blob URL للكود الجديد واستورده
+    const blob = new Blob([code], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    await import(blobUrl);
+    URL.revokeObjectURL(blobUrl);
+    console.log('%c✦ HMR: أُعيد تحميل ' + url, 'color:#10b981;');
+  } catch (err) {
+    console.error('[HMR] فشل إعادة التحميل:', err);
+    // fallback: أعد تحميل الصفحة
+    setTimeout(() => location.reload(), 500);
+  }
 }
 
 function showOverlay(message, stack) {
@@ -360,7 +443,11 @@ function showOverlay(message, stack) {
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(220,38,38,0.95);color:white;font:14px/1.5 monospace;padding:20px;z-index:99999;overflow:auto;direction:ltr;text-align:left;';
     document.body.appendChild(overlay);
   }
-  overlay.innerHTML = '<h2 style="margin:0 0 10px;">خطأ في التطوير</h2><pre style="white-space:pre-wrap;">' + message + (stack ? '\\n\\n' + stack : '') + '</pre>';
+  overlay.innerHTML = '<h2 style="margin:0 0 10px;">خطأ في التطوير</h2><pre style="white-space:pre-wrap;">' + escapeHtml(message) + (stack ? '\\n\\n' + escapeHtml(stack) : '') + '</pre><button onclick="this.parentElement.remove()" style="margin-top:1rem;padding:0.5rem 1rem;background:white;color:#ef4444;border:none;border-radius:4px;cursor:pointer;">إغلاق</button>';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 globalThis.__elmoorx_hmr__ = {
@@ -372,6 +459,8 @@ globalThis.__elmoorx_hmr__ = {
     if (!disposeHandlers.has(id)) disposeHandlers.set(id, new Set());
     disposeHandlers.get(id).add(handler);
   },
+  softReload,
+  moduleCache,
 };
 
 connect();
