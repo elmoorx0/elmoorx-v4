@@ -41,7 +41,7 @@ export async function createProject(name, template = 'default') {
     'router', 'ssr', 'i18n', 'http', 'testing', 'adapters',
     'store', 'forms', 'animation', 'database', 'realtime', 'pwa', 'ui',
     'graphql', 'charts', 'utils', 'markdown',
-    'minifier', 'treeshake',
+    'minifier', 'treeshake', 'sourcemap', 'compress',
   ];
   // ملاحظة: ui/advanced.mjs داخل مجلد ui لذا يُنسخ تلقائياً
   for (const pkg of packagesToCopy) {

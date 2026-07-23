@@ -80,7 +80,22 @@ export async function buildProject(rootDir, options = {}) {
     startUrl: '/',
   });
 
-  // 8) إحصائيات
+  // 8) ضغط الملفات (Gzip + Brotli)
+  if (target !== 'node') {
+    console.log(`  │ ضغط الملفات (Gzip + Brotli)...`);
+    try {
+      const { compressDir, printCompressionStats } = await import('../compress/index.mjs');
+      const results = compressDir(outPath);
+      const stats = printCompressionStats(results);
+      console.log(`  │ ✓ ملفات مضغوطة: ${stats.fileCount} ملف`);
+      console.log(`  │ Gzip: ${stats.gzipSavings} توفير`);
+      console.log(`  │ Brotli: ${stats.brotliSavings} توفير`);
+    } catch (err) {
+      console.log(`  │ ⚠ تخطي الضغط: ${err.message}`);
+    }
+  }
+
+  // 9) إحصائيات
   const stats = computeStats(outPath);
   console.log(`  ─────────────────────────────────────`);
   console.log(`  │ ✓ مكتمل`);

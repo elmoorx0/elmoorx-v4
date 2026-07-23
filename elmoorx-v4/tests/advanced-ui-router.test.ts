@@ -8,6 +8,7 @@ import {
   Pagination, Breadcrumb, Stepper, Tooltip,
   TreeView, Carousel, DragDropList, RichTextEditor, Image,
   notify, dismissNotification, NotificationCenter,
+  Drawer, Popover, Rate, Slider, OTPInput, Tag, Timeline, Empty, Stat, Banner,
 } from '../ui/advanced.mjs';
 import { lazyRoute, lazy, prefetchRoute } from '../router/index.mjs';
 
@@ -278,5 +279,144 @@ describe('Advanced UI — Notification system', () => {
     const id = notify('Test notification', { duration: 100 });
     expect(typeof id).toBe('number');
     setTimeout(() => dismissNotification(id), 150);
+  });
+});
+
+describe('Advanced UI — Drawer', () => {
+  it('should not render when closed', () => {
+    const html = renderToString(h(Drawer, { open: false, onClose: () => {} }));
+    expect(html).toBe('');
+  });
+
+  it('should render when open', () => {
+    const html = renderToString(h(Drawer, { open: true, onClose: () => {}, title: 'Test' }, 'Content'));
+    expect(html).toContain('Test');
+    expect(html).toContain('Content');
+  });
+
+  it('should support different sides', () => {
+    const html = renderToString(h(Drawer, { open: true, side: 'left', onClose: () => {} }));
+    expect(html).toContain('left:0');
+  });
+});
+
+describe('Advanced UI — Popover', () => {
+  it('should render trigger', () => {
+    const html = renderToString(h(Popover, { trigger: h('button', null, 'Click'), content: 'Popup text' }));
+    expect(html).toContain('Click');
+  });
+
+  it('should render content when open', () => {
+    // Popover starts closed, so content not visible initially
+    const html = renderToString(h(Popover, { trigger: 'Trigger', content: 'Hidden content' }));
+    expect(html).toContain('Trigger');
+  });
+});
+
+describe('Advanced UI — Rate', () => {
+  it('should render stars', () => {
+    const html = renderToString(h(Rate, { count: 5, value: 3 }));
+    expect(html).toContain('★');
+    expect(html).toContain('☆');
+  });
+
+  it('should render all filled when value equals count', () => {
+    const html = renderToString(h(Rate, { count: 3, value: 3 }));
+    // عد النجوم المملوءة
+    const filledCount = html.split('★').length - 1;
+    expect(filledCount).toBe(3);
+  });
+});
+
+describe('Advanced UI — Slider', () => {
+  it('should render range input', () => {
+    const html = renderToString(h(Slider, { min: 0, max: 100, value: 50 }));
+    expect(html).toContain('type="range"');
+    expect(html).toContain('50');
+  });
+
+  it('should show value when enabled', () => {
+    const html = renderToString(h(Slider, { value: 75, showValue: true }));
+    expect(html).toContain('75');
+  });
+});
+
+describe('Advanced UI — OTPInput', () => {
+  it('should render N input fields', () => {
+    const html = renderToString(h(OTPInput, { length: 6 }));
+    // عد <input عن طريق split
+    const inputCount = html.split('<input').length - 1;
+    expect(inputCount).toBe(6);
+  });
+
+  it('should default to 6 digits', () => {
+    const html = renderToString(h(OTPInput, {}));
+    const inputCount = html.split('<input').length - 1;
+    expect(inputCount).toBe(6);
+  });
+});
+
+describe('Advanced UI — Tag', () => {
+  it('should render tag with children', () => {
+    const html = renderToString(h(Tag, null, 'New'));
+    expect(html).toContain('New');
+  });
+
+  it('should render close button when closable', () => {
+    const html = renderToString(h(Tag, { closable: true, onClose: () => {} }, 'Removable'));
+    expect(html).toContain('×');
+  });
+});
+
+describe('Advanced UI — Timeline', () => {
+  it('should render timeline items', () => {
+    const items = [
+      { title: 'Event 1', description: 'First', time: '10:00' },
+      { title: 'Event 2', description: 'Second', time: '11:00' },
+    ];
+    const html = renderToString(h(Timeline, { items }));
+    expect(html).toContain('Event 1');
+    expect(html).toContain('Event 2');
+  });
+});
+
+describe('Advanced UI — Empty', () => {
+  it('should render empty state', () => {
+    const html = renderToString(h(Empty, { title: 'No items', description: 'Add some' }));
+    expect(html).toContain('No items');
+    expect(html).toContain('Add some');
+  });
+
+  it('should use default icon', () => {
+    const html = renderToString(h(Empty, {}));
+    expect(html).toContain('📭');
+  });
+});
+
+describe('Advanced UI — Stat', () => {
+  it('should render stat card', () => {
+    const html = renderToString(h(Stat, { label: 'Users', value: 1234, icon: '👥' }));
+    expect(html).toContain('Users');
+    expect(html).toContain('1234');
+    expect(html).toContain('👥');
+  });
+
+  it('should render trend', () => {
+    const html = renderToString(h(Stat, { label: 'Sales', value: 500, trend: { value: '+10%', direction: 'up' } }));
+    expect(html).toContain('+10%');
+    expect(html).toContain('↑');
+  });
+});
+
+describe('Advanced UI — Banner', () => {
+  it('should render banner', () => {
+    const html = renderToString(h(Banner, { title: 'Notice', variant: 'info' }, 'Important message'));
+    expect(html).toContain('Notice');
+    expect(html).toContain('Important message');
+  });
+
+  it('should render close button when closable', () => {
+    const html = renderToString(h(Banner, { onClose: () => {} }, 'Message'));
+    expect(html).toContain('×');
   });
 });

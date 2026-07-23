@@ -1052,4 +1052,442 @@ export default {
   dismissNotification,
   RichTextEditor,
   Image,
+  Drawer,
+  Popover,
+  Rate,
+  Slider,
+  OTPInput,
+  Tag,
+  Timeline,
+  Empty,
+  Stat,
+  Banner,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17) DRAWER — لوحة جانبية منزلقة
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Drawer(props) {
+  const {
+    open,
+    onClose,
+    title = '',
+    side = 'right', // right | left | top | bottom
+    width = 400,
+    children,
+    ...rest
+  } = props;
+
+  if (!open) return null;
+
+  const sideStyles = {
+    right: `right:0;top:0;bottom:0;width:${width}px;transform:translateX(0);`,
+    left: `left:0;top:0;bottom:0;width:${width}px;transform:translateX(0);`,
+    top: `top:0;left:0;right:0;height:${width}px;transform:translateY(0);`,
+    bottom: `bottom:0;left:0;right:0;height:${width}px;transform:translateY(0);`,
+  };
+
+  return h('div', {
+    onClick: onClose,
+    style: 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;',
+    ...rest,
+  },
+    h('div', {
+      onClick: e => e.stopPropagation(),
+      style: `position:absolute;background:${theme.colors.surface};box-shadow:${theme.shadows.lg};display:flex;flex-direction:column;${sideStyles[side]}`,
+    },
+      (title || onClose) && h('div', {
+        style: `display:flex;justify-content:space-between;align-items:center;padding:1rem 1.5rem;border-bottom:1px solid ${theme.colors.border};`,
+      },
+        title && h('h3', { style: `margin:0;color:${theme.colors.text};` }, title),
+        h('button', {
+          onClick: onClose,
+          style: `background:none;border:none;color:${theme.colors.textMuted};cursor:pointer;font-size:1.5rem;`,
+        }, '×')
+      ),
+      h('div', { style: 'flex:1;overflow-y:auto;padding:1.5rem;' }, children)
+    )
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18) POPOVER — نافذة منبثقة مرتبطة بعنصر
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Popover(props) {
+  const {
+    trigger,
+    content,
+    position = 'top', // top | bottom | left | right
+    triggerType = 'click', // click | hover
+    ...rest
+  } = props;
+
+  const open = $state(false);
+
+  const positions = {
+    top: 'bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:8px;',
+    bottom: 'top:100%;left:50%;transform:translateX(-50%);margin-top:8px;',
+    left: 'right:100%;top:50%;transform:translateY(-50%);margin-left:8px;',
+    right: 'left:100%;top:50%;transform:translateY(-50%);margin-right:8px;',
+  };
+
+  const triggerProps = triggerType === 'hover'
+    ? { onMouseEnter: () => open.set(true), onMouseLeave: () => open.set(false) }
+    : { onClick: () => open.set(!open()) };
+
+  return h('div', {
+    style: 'position:relative;display:inline-block;',
+    ...triggerProps,
+    ...rest,
+  },
+    trigger,
+    open() && h('div', {
+      style: `position:absolute;${positions[position]}background:${theme.colors.dark};color:${theme.colors.text};padding:0.75rem;border-radius:${theme.radius.md};box-shadow:${theme.shadows.lg};z-index:1000;min-width:200px;border:1px solid ${theme.colors.border};`,
+    }, typeof content === 'function' ? content() : content)
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 19) RATE — تقييم بالنجوم
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Rate(props) {
+  const {
+    count = 5,
+    value = 0,
+    onChange,
+    allowHalf = false,
+    disabled = false,
+    size = 24,
+    ...rest
+  } = props;
+
+  const hoverValue = $state(null);
+  const current = $state(value);
+
+  const handleClick = (val) => {
+    if (disabled) return;
+    current.set(val);
+    onChange?.(val);
+  };
+
+  const handleMouseEnter = (val) => {
+    if (disabled) return;
+    hoverValue.set(val);
+  };
+
+  const handleMouseLeave = () => {
+    if (disabled) return;
+    hoverValue.set(null);
+  };
+
+  const displayValue = hoverValue() !== null ? hoverValue() : current();
+
+  return h('div', {
+    style: `display:inline-flex;gap:2px;cursor:${disabled ? 'default' : 'pointer'};`,
+    onMouseLeave: handleMouseLeave,
+    ...rest,
+  },
+    Array.from({ length: count }, (_, i) => {
+      const starValue = i + 1;
+      const filled = displayValue >= starValue;
+      const half = allowHalf && displayValue >= starValue - 0.5 && displayValue < starValue;
+      return h('span', {
+        key: i,
+        onClick: () => handleClick(starValue),
+        onMouseEnter: () => handleMouseEnter(starValue),
+        style: `font-size:${size}px;color:${filled || half ? '#f59e0b' : theme.colors.border};transition:color 0.15s;user-select:none;`,
+      }, half ? '★' : filled ? '★' : '☆');
+    })
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 20) SLIDER — شريط تمرير القيمة
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Slider(props) {
+  const {
+    min = 0,
+    max = 100,
+    step = 1,
+    value = 50,
+    onChange,
+    disabled = false,
+    showValue = false,
+    ...rest
+  } = props;
+
+  const current = $state(value);
+
+  const handleChange = (e) => {
+    if (disabled) return;
+    const val = Number(e.target.value);
+    current.set(val);
+    onChange?.(val);
+  };
+
+  const percentage = ((current() - min) / (max - min)) * 100;
+
+  return h('div', {
+    style: `display:flex;align-items:center;gap:0.75rem;${disabled ? 'opacity:0.5;' : ''}`,
+    ...rest,
+  },
+    h('input', {
+      type: 'range',
+      min,
+      max,
+      step,
+      value: current(),
+      onChange: handleChange,
+      disabled,
+      style: `flex:1;-webkit-appearance:none;height:6px;background:linear-gradient(to right, ${theme.colors.primary} 0%, ${theme.colors.primary} ${percentage}%, ${theme.colors.border} ${percentage}%);border-radius:3px;outline:none;cursor:pointer;`,
+    }),
+    showValue && h('span', {
+      style: `min-width:40px;color:${theme.colors.text};font-size:${theme.fontSize.sm};text-align:center;`,
+    }, String(current()))
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 21) OTP INPUT — إدخال OTP
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function OTPInput(props) {
+  const {
+    length = 6,
+    onComplete,
+    disabled = false,
+    ...rest
+  } = props;
+
+  const values = $state(Array(length).fill(''));
+
+  const handleChange = (e, index) => {
+    if (disabled) return;
+    const val = e.target.value.replace(/\D/g, '').slice(-1);
+    const newValues = [...values()];
+    newValues[index] = val;
+    values.set(newValues);
+
+    // auto-focus next
+    if (val && index < length - 1) {
+      const next = document.getElementById(`otp-${index + 1}`);
+      next?.focus();
+    }
+
+    // check complete
+    if (newValues.every(v => v !== '') && onComplete) {
+      onComplete(newValues.join(''));
+    }
+  };
+
+  const handleKeyDown = (e, index) => {
+    if (e.key === 'Backspace' && !values()[index] && index > 0) {
+      const prev = document.getElementById(`otp-${index - 1}`);
+      prev?.focus();
+    }
+  };
+
+  const handlePaste = (e) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, length);
+    const newValues = Array(length).fill('');
+    for (let i = 0; i < pasted.length; i++) newValues[i] = pasted[i];
+    values.set(newValues);
+    if (newValues.every(v => v !== '') && onComplete) onComplete(newValues.join(''));
+  };
+
+  return h('div', {
+    style: 'display:flex;gap:0.5rem;justify-content:center;',
+    onPaste: handlePaste,
+    ...rest,
+  },
+    values().map((val, i) =>
+      h('input', {
+        id: `otp-${i}`,
+        key: i,
+        type: 'text',
+        inputMode: 'numeric',
+        maxLength: 1,
+        value: val,
+        onChange: e => handleChange(e, i),
+        onKeyDown: e => handleKeyDown(e, i),
+        disabled,
+        style: `width:40px;height:50px;text-align:center;font-size:1.5rem;background:${theme.colors.dark};border:1px solid ${theme.colors.border};border-radius:${theme.radius.md};color:${theme.colors.text};outline:none;${val ? `border-color:${theme.colors.primary};` : ''}`,
+      })
+    )
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 22) TAG — وسم صغير
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Tag(props) {
+  const {
+    color = theme.colors.primary,
+    closable = false,
+    onClose,
+    children,
+    ...rest
+  } = props;
+
+  return h('span', {
+    style: `display:inline-flex;align-items:center;gap:0.25rem;padding:0.15rem 0.5rem;background:${color}20;color:${color};border-radius:${theme.radius.sm};font-size:${theme.fontSize.xs};font-weight:500;`,
+    ...rest,
+  },
+    children,
+    closable && h('button', {
+      onClick: onClose,
+      style: `background:none;border:none;color:${color};cursor:pointer;font-size:0.85rem;padding:0;line-height:1;`,
+    }, '×')
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 23) TIMELINE — خط زمني
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Timeline(props) {
+  const {
+    items = [], // [{ title, description, time, color, icon }]
+    ...rest
+  } = props;
+
+  return h('div', {
+    style: 'position:relative;padding-right:1.5rem;',
+    ...rest,
+  },
+    // الخط
+    h('div', {
+      style: `position:absolute;right:8px;top:0;bottom:0;width:2px;background:${theme.colors.border};`,
+    }),
+    items.map((item, i) =>
+      h('div', {
+        key: i,
+        style: 'position:relative;padding-bottom:1.5rem;padding-right:1.5rem;',
+      },
+        h('div', {
+          style: `position:absolute;right:-1.5rem;top:4px;width:18px;height:18px;border-radius:50%;background:${item.color || theme.colors.primary};border:3px solid ${theme.colors.surface};display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:white;`,
+        }, item.icon || ''),
+        item.title && h('div', {
+          style: `color:${theme.colors.text};font-weight:600;margin-bottom:0.25rem;`,
+        }, item.title),
+        item.time && h('div', {
+          style: `color:${theme.colors.textMuted};font-size:${theme.fontSize.xs};margin-bottom:0.25rem;`,
+        }, item.time),
+        item.description && h('div', {
+          style: `color:${theme.colors.textMuted};font-size:${theme.fontSize.sm};`,
+        }, item.description)
+      )
+    )
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 24) EMPTY STATE
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Empty(props) {
+  const {
+    icon = '📭',
+    title = 'لا توجد بيانات',
+    description = '',
+    action,
+    ...rest
+  } = props;
+
+  return h('div', {
+    style: `text-align:center;padding:3rem 1rem;color:${theme.colors.textMuted};`,
+    ...rest,
+  },
+    h('div', { style: 'font-size:4rem;margin-bottom:1rem;' }, icon),
+    h('h3', { style: `color:${theme.colors.text};margin-bottom:0.5rem;` }, title),
+    description && h('p', { style: 'margin-bottom:1.5rem;' }, description),
+    action
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 25) STAT — بطاقة إحصائية
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Stat(props) {
+  const {
+    label,
+    value,
+    icon,
+    trend, // { value, direction: 'up' | 'down' }
+    color = theme.colors.primary,
+    ...rest
+  } = props;
+
+  return h('div', {
+    style: `background:${theme.colors.surface};padding:1.25rem;border-radius:${theme.radius.lg};border-right:4px solid ${color};`,
+    ...rest,
+  },
+    h('div', {
+      style: 'display:flex;justify-content:space-between;align-items:flex-start;',
+    },
+      h('div', null,
+        h('div', {
+          style: `color:${theme.colors.textMuted};font-size:${theme.fontSize.sm};margin-bottom:0.25rem;`,
+        }, label),
+        h('div', {
+          style: `color:${theme.colors.text};font-size:1.75rem;font-weight:bold;`,
+        }, value)
+      ),
+      icon && h('div', {
+        style: `width:40px;height:40px;border-radius:${theme.radius.md};background:${color}20;color:${color};display:flex;align-items:center;justify-content:center;font-size:1.25rem;`,
+      }, icon)
+    ),
+    trend && h('div', {
+      style: `margin-top:0.5rem;font-size:${theme.fontSize.sm};color:${trend.direction === 'up' ? theme.colors.success : theme.colors.danger};`,
+    },
+      trend.direction === 'up' ? '↑' : '↓',
+      ' ',
+      trend.value
+    )
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 26) BANNER — شريط إعلان
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Banner(props) {
+  const {
+    variant = 'info',
+    title,
+    action,
+    onClose,
+    children,
+    ...rest
+  } = props;
+
+  const variants = {
+    info: { bg: 'rgba(14,165,233,0.1)', color: theme.colors.primary, border: theme.colors.primary },
+    success: { bg: 'rgba(16,185,129,0.1)', color: theme.colors.success, border: theme.colors.success },
+    warning: { bg: 'rgba(245,158,11,0.1)', color: theme.colors.warning, border: theme.colors.warning },
+    danger: { bg: 'rgba(239,68,68,0.1)', color: theme.colors.danger, border: theme.colors.danger },
+  };
+  const v = variants[variant];
+
+  return h('div', {
+    style: `background:${v.bg};border:1px solid ${v.border};border-radius:${theme.radius.md};padding:1rem 1.5rem;display:flex;align-items:center;gap:1rem;`,
+    ...rest,
+  },
+    h('div', { style: 'flex:1;' },
+      title && h('div', { style: `color:${v.color};font-weight:600;margin-bottom:0.15rem;` }, title),
+      h('div', { style: `color:${theme.colors.text};font-size:${theme.fontSize.sm};` }, children)
+    ),
+    action,
+    onClose && h('button', {
+      onClick: onClose,
+      style: `background:none;border:none;color:${theme.colors.textMuted};cursor:pointer;font-size:1.25rem;`,
+    }, '×')
+  );
+}
