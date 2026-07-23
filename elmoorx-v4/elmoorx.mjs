@@ -22,6 +22,7 @@ import { createServer } from './cli/dev.mjs';
 import { createProject } from './cli/create.mjs';
 import { initProject } from './cli/init.mjs';
 import { buildProject } from './cli/build.mjs';
+import { bundleProject } from './cli/bundle.mjs';
 import { deployProject } from './cli/deploy.mjs';
 import { generateComponent } from './cli/generate.mjs';
 import { generateApp } from './cli/generate-app.mjs';
@@ -36,6 +37,8 @@ import { analyzeProject } from './cli/analyze.mjs';
 import { cleanProject } from './cli/clean.mjs';
 import { watchProject } from './cli/watch.mjs';
 import { inspectFile } from './cli/inspect.mjs';
+import { startRepl } from './cli/repl.mjs';
+import { listItems } from './cli/list.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -146,6 +149,23 @@ async function main() {
       await inspectFile(file, { showOutput });
       break;
     }
+    case 'bundle': {
+      await bundleProject(process.cwd(), {
+        outDir: argValue(args, 'out', 'dist'),
+      });
+      break;
+    }
+    case 'repl':
+    case 'shell': {
+      await startRepl();
+      break;
+    }
+    case 'list':
+    case 'ls': {
+      const category = args.find(a => !a.startsWith('--')) || 'all';
+      await listItems(category);
+      break;
+    }
     case 'visual':
     case 'builder': {
       const port = parseInt(argValue(args, 'port', '8080'));
@@ -223,8 +243,9 @@ function printHelp() {
     elmoorx new <template> <name>      ينشئ من قالب (blank, starter, blog, dashboard, saas, ...)
     elmoorx init                       يحوّل مشروع موجود إلى Elmoorx
     elmoorx dev [--port=3000]          يبدأ خادم التطوير + HMR صفر-زمني
-    elmoorx build [--target=browser]   يبني للإنتاج
+    elmoorx build [--target=browser]   يبني للإنتاج (مع minify + gzip + brotli)
                                         الأهداف: browser|cloudflare|vercel|deno|native
+    elmoorx bundle                     يدمج كل شيء في HTML واحد
     elmoorx deploy [--target=static]   ينشر على المنصة
                                         الأهداف: cloudflare|vercel|netlify|deno|node|static
     elmoorx generate "<description>"   يولّد مكون من وصف نصي
@@ -235,11 +256,13 @@ function printHelp() {
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx test                       يشغّل اختبارات المشروع
     elmoorx bench                      يقيس أداء الإطار
+    elmoorx watch [--target=browser]   يراقب التغييرات ويعيد البناء
+    elmoorx inspect <file>             يفحص ملف ويظهر معلوماته
     elmoorx upgrade [--local]          يحدّث الإطار لأحدث إصدار
     elmoorx analyze                    يحلل حجم المشروع والإطار
     elmoorx clean                      ينظف ملفات البناء والمؤقتة
-    elmoorx watch [--target=browser]   يراقب التغييرات ويعيد البناء
-    elmoorx inspect <file>             يفحص ملف ويظهر معلوماته
+    elmoorx list [category]            يعرض المكونات/القوالب/الـ packages
+    elmoorx repl                       interactive shell للتجربة
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
