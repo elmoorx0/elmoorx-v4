@@ -54,7 +54,7 @@ export async function info() {
   result += `  │ cwd:        ${process.cwd()}\n`;
   result += `  │ PID:        ${process.pid}\n`;
   result += `  ─────────────────────────────────────\n`;
-  result += `  ✦ Packages المدمجة (14):\n`;
+  result += `  ✦ Packages المدمجة (15):\n`;
   result += `  │ • runtime     — signals, store, islands, security\n`;
   result += `  │ • compiler    — TS + JSX بدون Babel\n`;
   result += `  │ • router      — file-based + dynamic routing\n`;
@@ -69,10 +69,11 @@ export async function info() {
   result += `  │ • database    — SQLite + IndexedDB\n`;
   result += `  │ • realtime    — WebSocket server + client\n`;
   result += `  │ • pwa         — service worker + manifest\n`;
+  result += `  │ • ui          — 25+ components جاهزة\n`;
   result += `  ─────────────────────────────────────\n`;
-  result += `  ✦ CLI commands (11):\n`;
-  result += `  │ create, dev, build, generate, visual, static,\n`;
-  result += `  │ test, add, bench, doctor, info\n`;
+  result += `  ✦ CLI commands (14):\n`;
+  result += `  │ create, init, dev, build, deploy, generate, add,\n`;
+  result += `  │ visual, docs, static, test, bench, doctor, info\n`;
   result += `  ─────────────────────────────────────\n`;
   return result;
 }

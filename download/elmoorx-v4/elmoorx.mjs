@@ -20,11 +20,16 @@
 
 import { createServer } from './cli/dev.mjs';
 import { createProject } from './cli/create.mjs';
+import { initProject } from './cli/init.mjs';
 import { buildProject } from './cli/build.mjs';
+import { deployProject } from './cli/deploy.mjs';
 import { generateComponent } from './cli/generate.mjs';
 import { startVisualBuilder } from './cli/visual.mjs';
 import { serveStatic } from './cli/serve.mjs';
 import { runTests } from './cli/test.mjs';
+import { addComponent } from './cli/add.mjs';
+import { runBenchmarks } from './cli/bench.mjs';
+import { startDocsServer } from './cli/docs.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -40,6 +45,21 @@ async function main() {
         process.exit(1);
       }
       await createProject(name, args[1] /* template */);
+      break;
+    }
+    case 'init': {
+      const force = args.includes('--force') || args.includes('-f');
+      await initProject({ force });
+      break;
+    }
+    case 'deploy': {
+      const target = argValue(args, 'target', 'static');
+      await deployProject(target, { out: argValue(args, 'out', 'dist'), host: argValue(args, 'host', null), ssh: argValue(args, 'ssh', null) });
+      break;
+    }
+    case 'docs': {
+      const port = parseInt(argValue(args, 'port', '9000'));
+      await startDocsServer(port);
       break;
     }
     case 'dev':
@@ -80,6 +100,21 @@ async function main() {
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
+      break;
+    }
+    case 'add': {
+      const name = args.find(a => !a.startsWith('--'));
+      if (!name) {
+        console.error('الاستخدام: elmoorx add <component>');
+        console.error('مثال: elmoorx add navbar');
+        process.exit(1);
+      }
+      await addComponent(name);
+      break;
+    }
+    case 'bench':
+    case 'benchmark': {
+      await runBenchmarks();
       break;
     }
     case 'info': {
@@ -125,14 +160,20 @@ function printHelp() {
 
   الأوامر:
     elmoorx create <name>              ينشئ مشروع جديد
+    elmoorx init                       يحوّل مشروع موجود إلى Elmoorx
     elmoorx dev [--port=3000]          يبدأ خادم التطوير + HMR صفر-زمني
     elmoorx build [--target=browser]   يبني للإنتاج
                                         الأهداف: browser|cloudflare|vercel|deno|native
+    elmoorx deploy [--target=static]   ينشر على المنصة
+                                        الأهداف: cloudflare|vercel|netlify|deno|node|static
     elmoorx generate "<description>"   يولّد مكون من وصف نصي
+    elmoorx add <component>            يضيف مكون جاهز للمشروع
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
+    elmoorx docs [--port=9000]         يفتح موقع التوثيق التفاعلي
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
-    elmoorx doctor                     يفحص صحة المشروع
     elmoorx test                       يشغّل اختبارات المشروع
+    elmoorx bench                      يقيس أداء الإطار
+    elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
     elmoorx --help                     يعرض هذه المساعدة

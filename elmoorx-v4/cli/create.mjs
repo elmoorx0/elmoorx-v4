@@ -39,7 +39,7 @@ export async function createProject(name, template = 'default') {
   const packagesToCopy = [
     'runtime', 'compiler', 'cli', 'vendor',
     'router', 'ssr', 'i18n', 'http', 'testing', 'adapters',
-    'store', 'forms', 'animation', 'database', 'realtime', 'pwa',
+    'store', 'forms', 'animation', 'database', 'realtime', 'pwa', 'ui',
   ];
   for (const pkg of packagesToCopy) {
     const src = join(FRAMEWORK_ROOT, pkg);

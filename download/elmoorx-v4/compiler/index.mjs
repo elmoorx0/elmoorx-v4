@@ -630,13 +630,6 @@ export function compile(source, filename = '<unknown>') {
 
 function rewriteImports(code, filename) {
   // استبدل @elmoorx/* بالمسارات الصحيحة
-  // runtime → /.elmoorx/runtime/core.mjs
-  // router → /.elmoorx/router/index.mjs
-  // ssr → /.elmoorx/ssr/index.mjs
-  // i18n → /.elmoorx/i18n/index.mjs
-  // http → /.elmoorx/http/index.mjs
-  // testing → /.elmoorx/testing/index.mjs
-  // adapters → /.elmoorx/adapters/index.mjs
   const modulePaths = {
     runtime: 'runtime/core.mjs',
     router: 'router/index.mjs',
@@ -645,6 +638,13 @@ function rewriteImports(code, filename) {
     http: 'http/index.mjs',
     testing: 'testing/index.mjs',
     adapters: 'adapters/index.mjs',
+    store: 'store/index.mjs',
+    forms: 'forms/index.mjs',
+    animation: 'animation/index.mjs',
+    database: 'database/index.mjs',
+    realtime: 'realtime/index.mjs',
+    pwa: 'pwa/index.mjs',
+    ui: 'ui/index.mjs',
   };
   for (const [pkg, path] of Object.entries(modulePaths)) {
     const regex = new RegExp(`from\\s+['"]@elmoorx/${pkg}['"]`, 'g');

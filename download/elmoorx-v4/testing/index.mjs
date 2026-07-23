@@ -23,6 +23,19 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 0) BROWSER SHIMS — للـ tests في Node
+// ─────────────────────────────────────────────────────────────────────────────
+
+if (typeof globalThis.requestAnimationFrame === 'undefined') {
+  globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 16);
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
+}
+if (typeof globalThis.performance === 'undefined') {
+  const { performance: nodePerf } = await import('node:perf_hooks');
+  globalThis.performance = nodePerf;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1) STATE
 // ─────────────────────────────────────────────────────────────────────────────
 

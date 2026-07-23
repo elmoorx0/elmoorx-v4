@@ -205,7 +205,11 @@ export function renderToString(node) {
   if (Array.isArray(node)) return node.map(renderToString).join('');
   if (typeof node === 'object' && node.tag) {
     if (node.tag === Fragment) return node.children.map(renderToString).join('');
-    if (typeof node.tag === 'function') return renderToString(node.tag(node.props));
+    if (typeof node.tag === 'function') {
+      // مرّر children كـ prop للـ components
+      const props = { ...node.props, children: node.children };
+      return renderToString(node.tag(props));
+    }
     const attrs = Object.entries(node.props || {})
       .filter(([k]) => k !== 'children')
       .map(([k, v]) => {

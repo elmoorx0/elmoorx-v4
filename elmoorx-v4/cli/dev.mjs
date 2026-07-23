@@ -165,9 +165,9 @@ async function handleRequest(req, res, rootDir) {
     }
   }
 
-  // modules: router, ssr, i18n, http, testing, adapters, store, forms, animation, database, realtime, pwa
+  // modules: router, ssr, i18n, http, testing, adapters, store, forms, animation, database, realtime, pwa, ui
   // يدعم /router/ و /.elmoorx/router/ (وكذلك /vendor/router/ للتوافق القديم)
-  const moduleMatch = path.match(/^\/(?:\.elmoorx\/)?(router|ssr|i18n|http|testing|adapters|store|forms|animation|database|realtime|pwa)\/?(.*)$/);
+  const moduleMatch = path.match(/^\/(?:\.elmoorx\/)?(router|ssr|i18n|http|testing|adapters|store|forms|animation|database|realtime|pwa|ui)\/?(.*)$/);
   if (moduleMatch) {
     const [, moduleName, rest] = moduleMatch;
     const subPath = rest ? `${moduleName}/${rest}` : `${moduleName}/index.mjs`;

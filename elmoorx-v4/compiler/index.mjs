@@ -644,6 +644,7 @@ function rewriteImports(code, filename) {
     database: 'database/index.mjs',
     realtime: 'realtime/index.mjs',
     pwa: 'pwa/index.mjs',
+    ui: 'ui/index.mjs',
   };
   for (const [pkg, path] of Object.entries(modulePaths)) {
     const regex = new RegExp(`from\\s+['"]@elmoorx/${pkg}['"]`, 'g');
