@@ -42,8 +42,9 @@ export async function createProject(name, template = 'default') {
     'store', 'forms', 'animation', 'database', 'realtime', 'pwa', 'ui',
     'graphql', 'charts', 'utils', 'markdown',
     'minifier', 'treeshake', 'sourcemap', 'compress',
+    'e2e', 'imageopt',
   ];
-  // ملاحظة: ui/advanced.mjs داخل مجلد ui لذا يُنسخ تلقائياً
+  // ملاحظة: ui/advanced.mjs و ui/extras.mjs داخل مجلد ui لذا يُنسخان تلقائياً
   for (const pkg of packagesToCopy) {
     const src = join(FRAMEWORK_ROOT, pkg);
     if (existsSync(src)) {
