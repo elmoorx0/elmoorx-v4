@@ -40,6 +40,7 @@ export async function createProject(name, template = 'default') {
     'runtime', 'compiler', 'cli', 'vendor',
     'router', 'ssr', 'i18n', 'http', 'testing', 'adapters',
     'store', 'forms', 'animation', 'database', 'realtime', 'pwa', 'ui',
+    'graphql', 'charts', 'utils', 'markdown',
   ];
   for (const pkg of packagesToCopy) {
     const src = join(FRAMEWORK_ROOT, pkg);

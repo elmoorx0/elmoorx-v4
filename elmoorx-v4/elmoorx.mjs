@@ -30,6 +30,9 @@ import { runTests } from './cli/test.mjs';
 import { addComponent } from './cli/add.mjs';
 import { runBenchmarks } from './cli/bench.mjs';
 import { startDocsServer } from './cli/docs.mjs';
+import { upgradeFramework } from './cli/upgrade.mjs';
+import { analyzeProject } from './cli/analyze.mjs';
+import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -37,8 +40,7 @@ const [cmd, ...args] = process.argv.slice(2);
 
 async function main() {
   switch (cmd) {
-    case 'create':
-    case 'new': {
+    case 'create': {
       const name = args[0];
       if (!name) {
         console.error('الاستخدام: elmoorx create <اسم-المشروع>');
@@ -60,6 +62,28 @@ async function main() {
     case 'docs': {
       const port = parseInt(argValue(args, 'port', '9000'));
       await startDocsServer(port);
+      break;
+    }
+    case 'upgrade': {
+      const force = args.includes('--force') || args.includes('-f');
+      const fromLocal = args.includes('--local');
+      await upgradeFramework({ force, fromLocal });
+      break;
+    }
+    case 'analyze':
+    case 'analyse': {
+      await analyzeProject();
+      break;
+    }
+    case 'new': {
+      const template = args[0];
+      const name = args[1];
+      if (!template || !name) {
+        console.error('الاستخدام: elmoorx new <template> <name>');
+        console.error('القوالب: blank, starter, blog, dashboard, ecommerce, saas, landing, docs, portfolio');
+        process.exit(1);
+      }
+      await createFromTemplate(template, name);
       break;
     }
     case 'dev':
@@ -160,6 +184,7 @@ function printHelp() {
 
   الأوامر:
     elmoorx create <name>              ينشئ مشروع جديد
+    elmoorx new <template> <name>      ينشئ من قالب (blank, starter, blog, dashboard, saas, ...)
     elmoorx init                       يحوّل مشروع موجود إلى Elmoorx
     elmoorx dev [--port=3000]          يبدأ خادم التطوير + HMR صفر-زمني
     elmoorx build [--target=browser]   يبني للإنتاج
@@ -173,6 +198,8 @@ function printHelp() {
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx test                       يشغّل اختبارات المشروع
     elmoorx bench                      يقيس أداء الإطار
+    elmoorx upgrade [--local]          يحدّث الإطار لأحدث إصدار
+    elmoorx analyze                    يحلل حجم المشروع والإطار
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
