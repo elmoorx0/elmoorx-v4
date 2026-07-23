@@ -257,21 +257,71 @@ export function setNotFound(component) { notFoundComponent = component; }
 export function setLayout(component) { layoutComponent = component; }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9) LAZY ROUTE
+// 9) LAZY ROUTE — تحميل عند الطلب مع code splitting
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function lazyRoute(loader) {
+export function lazyRoute(loader, options = {}) {
+  const { fallback, prefetch = true } = options;
   let loaded = null;
-  return (props) => {
-    if (!loaded) {
-      loader().then(m => {
+  let loadingPromise = null;
+  const state = $state({ component: null, loading: false, error: null });
+
+  const load = () => {
+    if (loaded || loadingPromise) return loadingPromise;
+    state.set(s => ({ ...s, loading: true }));
+    loadingPromise = loader()
+      .then(m => {
         loaded = m.default || m;
-        currentRoute.set({ ...currentRoute(), _ts: Date.now() });
+        state.set({ component: loaded, loading: false, error: null });
+        return loaded;
+      })
+      .catch(err => {
+        state.set({ component: null, loading: false, error: err });
+        throw err;
       });
-      return h('div', { style: 'padding:2rem;text-align:center;color:#94a3b8;' }, 'جاري التحميل...');
-    }
-    return h(loaded, props);
+    return loadingPromise;
   };
+
+  if (prefetch && typeof window !== 'undefined') {
+    setTimeout(load, 1000);
+  }
+
+  return (props) => {
+    const current = state();
+    if (current.error) {
+      return h('div', { style: 'padding:2rem;text-align:center;color:#ef4444;' },
+        h('p', null, 'فشل تحميل الصفحة'),
+        h('button', { onClick: () => { loaded = null; loadingPromise = null; load(); }, style: 'padding:0.5rem 1rem;background:#0ea5e9;color:white;border:none;border-radius:4px;cursor:pointer;margin-top:1rem;' }, 'إعادة المحاولة')
+      );
+    }
+    if (!current.component) {
+      load();
+      return fallback || h('div', { style: 'padding:2rem;text-align:center;color:#94a3b8;' },
+        h('div', { style: 'display:inline-block;width:24px;height:24px;border:3px solid #334155;border-top-color:#0ea5e9;border-radius:50%;animation:elmoorx-spin 0.8s linear infinite;' }),
+        h('p', { style: 'margin-top:0.5rem;' }, 'جاري التحميل...')
+      );
+    }
+    return h(current.component, props);
+  };
+}
+
+/**
+ * Lazy component — تحميل مكون عند الحاجة (code splitting)
+ */
+export function lazy(loader, options = {}) {
+  return lazyRoute(loader, options);
+}
+
+/**
+ * Prefetch route — تحميل مسبق
+ */
+export function prefetchRoute(loader) {
+  if (typeof window === 'undefined') return;
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(() => loader().catch(() => {}));
+  } else {
+    setTimeout(() => loader().catch(() => {}), 2000);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

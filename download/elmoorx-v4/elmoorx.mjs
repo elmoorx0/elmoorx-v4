@@ -24,6 +24,7 @@ import { initProject } from './cli/init.mjs';
 import { buildProject } from './cli/build.mjs';
 import { deployProject } from './cli/deploy.mjs';
 import { generateComponent } from './cli/generate.mjs';
+import { generateApp } from './cli/generate-app.mjs';
 import { startVisualBuilder } from './cli/visual.mjs';
 import { serveStatic } from './cli/serve.mjs';
 import { runTests } from './cli/test.mjs';
@@ -32,6 +33,7 @@ import { runBenchmarks } from './cli/bench.mjs';
 import { startDocsServer } from './cli/docs.mjs';
 import { upgradeFramework } from './cli/upgrade.mjs';
 import { analyzeProject } from './cli/analyze.mjs';
+import { cleanProject } from './cli/clean.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -108,6 +110,22 @@ async function main() {
         process.exit(1);
       }
       await generateComponent({ description, outDir: process.cwd() + '/src' });
+      break;
+    }
+    case 'generate-app': {
+      const positional = args.filter(a => !a.startsWith('--'));
+      const name = positional.pop();
+      const description = positional.join(' ');
+      if (!description || !name) {
+        console.error('الاستخدام: elmoorx generate-app "<وصف>" <project-name>');
+        console.error('مثال: elmoorx generate-app "todo app" my-todo');
+        process.exit(1);
+      }
+      await generateApp(description, name);
+      break;
+    }
+    case 'clean': {
+      await cleanProject();
       break;
     }
     case 'visual':
@@ -192,6 +210,7 @@ function printHelp() {
     elmoorx deploy [--target=static]   ينشر على المنصة
                                         الأهداف: cloudflare|vercel|netlify|deno|node|static
     elmoorx generate "<description>"   يولّد مكون من وصف نصي
+    elmoorx generate-app "<desc>" <name> يولّد تطبيق كامل (todo, chat, weather, ...)
     elmoorx add <component>            يضيف مكون جاهز للمشروع
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
     elmoorx docs [--port=9000]         يفتح موقع التوثيق التفاعلي
@@ -200,6 +219,7 @@ function printHelp() {
     elmoorx bench                      يقيس أداء الإطار
     elmoorx upgrade [--local]          يحدّث الإطار لأحدث إصدار
     elmoorx analyze                    يحلل حجم المشروع والإطار
+    elmoorx clean                      ينظف ملفات البناء والمؤقتة
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
