@@ -35,7 +35,10 @@ export async function buildProject(rootDir, options = {}) {
   const srcDir = join(rootDir, 'src');
   if (existsSync(srcDir)) {
     console.log(`  │ تجميع src/...`);
-    compileDir(srcDir, join(outPath, 'src'));
+    compileDir(srcDir, join(outPath, 'src'), {
+      treeshake: target !== 'node', // لا تهز في node للتوافق
+      minify: target !== 'node',    // لا تصغّر في node
+    });
   }
 
   // 4) نسخ public/
@@ -89,27 +92,55 @@ export async function buildProject(rootDir, options = {}) {
     ${getDeployInstructions(target, outDir)}\n`);
 }
 
-function compileDir(srcDir, outDir) {
+async function compileDir(srcDir, outDir, options = {}) {
   if (!existsSync(srcDir)) return;
   mkdirSync(outDir, { recursive: true });
   const entries = readdirSync(srcDir, { withFileTypes: true });
+
+  // حمّل minifier و treeshake مرة واحدة
+  let minifyFn, shakeFn;
+  try { ({ minify: minifyFn } = await import('../minifier/index.mjs')); } catch {}
+  try { ({ shake: shakeFn } = await import('../treeshake/index.mjs')); } catch {}
+
   for (const entry of entries) {
     const srcPath = join(srcDir, entry.name);
     const outPath = join(outDir, entry.name);
     if (entry.isDirectory()) {
-      compileDir(srcPath, outPath);
+      await compileDir(srcPath, outPath, options);
     } else if (entry.isFile()) {
       const ext = extname(entry.name).toLowerCase();
       if (ext === '.ts' || ext === '.tsx' || ext === '.mtsx') {
         let compiled = compile(readFileSync(srcPath, 'utf8'), srcPath);
-        // في الإنتاج، الـ runtime في /runtime/ وليس /.elmoorx/runtime/
         compiled = compiled.replace(/\/\.elmoorx\/runtime\//g, '/runtime/')
                            .replace(/\/\.elmoorx\/vendor\//g, '/vendor/');
+
+        if (options.treeshake !== false && shakeFn) {
+          try {
+            const result = shakeFn(compiled);
+            compiled = result.code;
+          } catch {}
+        }
+
+        if (options.minify !== false && minifyFn) {
+          try {
+            const result = minifyFn(compiled);
+            compiled = result.code;
+          } catch {}
+        }
+
         writeFileSync(outPath.replace(/\.\w+$/, '.mjs'), compiled);
       } else if (ext === '.mjs' || ext === '.js') {
         let compiled = compile(readFileSync(srcPath, 'utf8'), srcPath);
         compiled = compiled.replace(/\/\.elmoorx\/runtime\//g, '/runtime/')
                            .replace(/\/\.elmoorx\/vendor\//g, '/vendor/');
+
+        if (options.minify !== false && minifyFn) {
+          try {
+            const result = minifyFn(compiled);
+            compiled = result.code;
+          } catch {}
+        }
+
         writeFileSync(outPath, compiled);
       } else {
         writeFileSync(outPath, readFileSync(srcPath));
