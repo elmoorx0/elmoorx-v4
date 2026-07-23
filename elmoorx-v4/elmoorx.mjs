@@ -34,6 +34,8 @@ import { startDocsServer } from './cli/docs.mjs';
 import { upgradeFramework } from './cli/upgrade.mjs';
 import { analyzeProject } from './cli/analyze.mjs';
 import { cleanProject } from './cli/clean.mjs';
+import { watchProject } from './cli/watch.mjs';
+import { inspectFile } from './cli/inspect.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -128,6 +130,22 @@ async function main() {
       await cleanProject();
       break;
     }
+    case 'watch': {
+      const target = argValue(args, 'target', 'browser');
+      const out = argValue(args, 'out', 'dist');
+      await watchProject({ target, outDir: out });
+      break;
+    }
+    case 'inspect': {
+      const file = args.find(a => !a.startsWith('--'));
+      if (!file) {
+        console.error('الاستخدام: elmoorx inspect <file>');
+        process.exit(1);
+      }
+      const showOutput = args.includes('--output') || args.includes('-o');
+      await inspectFile(file, { showOutput });
+      break;
+    }
     case 'visual':
     case 'builder': {
       const port = parseInt(argValue(args, 'port', '8080'));
@@ -220,6 +238,8 @@ function printHelp() {
     elmoorx upgrade [--local]          يحدّث الإطار لأحدث إصدار
     elmoorx analyze                    يحلل حجم المشروع والإطار
     elmoorx clean                      ينظف ملفات البناء والمؤقتة
+    elmoorx watch [--target=browser]   يراقب التغييرات ويعيد البناء
+    elmoorx inspect <file>             يفحص ملف ويظهر معلوماته
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار

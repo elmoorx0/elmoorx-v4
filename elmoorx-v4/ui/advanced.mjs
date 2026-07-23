@@ -658,7 +658,380 @@ export function Tooltip(props) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 10) EXPORTS
+// 10) TREE VIEW — شجرة قابلة للتوسيع
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function TreeView(props) {
+  const {
+    data = [], // [{ id, label, icon, children: [...], expanded, selected, disabled }]
+    onSelect,
+    onToggle,
+    showIcons = true,
+    ...rest
+  } = props;
+
+  const renderNode = (node, depth = 0) => {
+    const hasChildren = node.children && node.children.length > 0;
+    return h('div', { key: node.id },
+      h('div', {
+        onClick: () => !node.disabled && (onSelect?.(node), node.selected = !node.selected),
+        style: `display:flex;align-items:center;gap:0.4rem;padding:0.4rem 0.5rem;cursor:${node.disabled ? 'not-allowed' : 'pointer'};border-radius:${theme.radius.sm};padding-right:${depth * 1.5 + 0.5}rem;${node.selected ? `background:${theme.colors.primary};color:white;` : `color:${theme.colors.text};`}opacity:${node.disabled ? 0.5 : 1};transition:background 0.15s;`,
+      },
+        hasChildren
+          ? h('button', {
+              onClick: (e) => { e.stopPropagation(); node.expanded = !node.expanded; onToggle?.(node); },
+              style: 'background:none;border:none;cursor:pointer;font-size:0.75rem;padding:0;width:16px;color:inherit;',
+            }, node.expanded ? '▼' : '▶')
+          : h('span', { style: 'width:16px;' }),
+        showIcons && (node.icon || (hasChildren ? '📁' : '📄')) && h('span', { style: 'font-size:1rem;' }, node.icon || (hasChildren ? '📁' : '📄')),
+        h('span', { style: 'font-size:0.9rem;' }, node.label)
+      ),
+      hasChildren && node.expanded && h('div', null,
+        node.children.map(child => renderNode(child, depth + 1))
+      )
+    );
+  };
+
+  return h('div', {
+    style: `background:${theme.colors.surface};border-radius:${theme.radius.md};padding:0.5rem;user-select:none;`,
+    ...rest,
+  }, data.map(node => renderNode(node)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11) CAROUSEL / SLIDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Carousel(props) {
+  const {
+    items = [],
+    autoplay = false,
+    interval = 3000,
+    showArrows = true,
+    showDots = true,
+    loop = true,
+    ...rest
+  } = props;
+
+  const current = $state(0);
+
+  const next = () => {
+    if (current() < items.length - 1) current.set(current() + 1);
+    else if (loop) current.set(0);
+  };
+
+  const prev = () => {
+    if (current() > 0) current.set(current() - 1);
+    else if (loop) current.set(items.length - 1);
+  };
+
+  const goTo = (i) => current.set(i);
+
+  if (autoplay && typeof window !== 'undefined') {
+    let timer;
+    $effect(() => {
+      timer = setInterval(next, interval);
+      onCleanup(() => clearInterval(timer));
+    });
+  }
+
+  return h('div', {
+    style: 'position:relative;overflow:hidden;border-radius:8px;background:#0f172a;',
+    ...rest,
+  },
+    h('div', {
+      style: `display:flex;transition:transform 0.3s ease;transform:translateX(-${current() * 100}%);`,
+    }, items.map((item, i) =>
+      h('div', {
+        key: i,
+        style: 'min-width:100%;height:300px;display:flex;align-items:center;justify-content:center;',
+      }, typeof item === 'function' ? item() : item)
+    )),
+    showArrows && h('button', {
+      onClick: prev,
+      style: 'position:absolute;top:50%;right:0.5rem;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:white;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.25rem;',
+    }, '›'),
+    showArrows && h('button', {
+      onClick: next,
+      style: 'position:absolute;top:50%;left:0.5rem;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:white;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.25rem;',
+    }, '‹'),
+    showDots && h('div', {
+      style: 'position:absolute;bottom:0.5rem;left:50%;transform:translateX(-50%);display:flex;gap:0.25rem;',
+    }, items.map((_, i) =>
+      h('button', {
+        key: i,
+        onClick: () => goTo(i),
+        style: `width:8px;height:8px;border-radius:50%;border:none;cursor:pointer;background:${i === current() ? 'white' : 'rgba(255,255,255,0.4)'};`,
+      })
+    ))
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12) DRAG-DROP LIST (reorder)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function DragDropList(props) {
+  const {
+    items: itemsProp = [],
+    onReorder,
+    renderItem,
+    ...rest
+  } = props;
+
+  const items = $state([...itemsProp]);
+  const dragging = $state(null);
+
+  const handleDragStart = (e, index) => {
+    dragging.set(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e, index) => {
+    e.preventDefault();
+    const from = dragging();
+    if (from === null || from === index) return;
+    const newItems = [...items()];
+    const [moved] = newItems.splice(from, 1);
+    newItems.splice(index, 0, moved);
+    items.set(newItems);
+    dragging.set(null);
+    onReorder?.(newItems);
+  };
+
+  return h('div', {
+    style: `background:${theme.colors.surface};border-radius:${theme.radius.md};padding:0.5rem;`,
+    ...rest,
+  },
+    items().map((item, i) =>
+      h('div', {
+        key: i,
+        draggable: true,
+        onDragStart: (e) => handleDragStart(e, i),
+        onDragOver: (e) => handleDragOver(e, i),
+        onDrop: (e) => handleDrop(e, i),
+        style: `padding:0.5rem;margin-bottom:0.25rem;background:${dragging() === i ? theme.colors.border : theme.colors.dark};border-radius:${theme.radius.sm};cursor:move;color:${theme.colors.text};`,
+      }, renderItem ? renderItem(item, i) : String(item))
+    )
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13) NOTIFICATION SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+
+const notifications = $state([]);
+
+export function notify(message, options = {}) {
+  const id = Date.now() + Math.random();
+  const { variant = 'info', title, duration = 5000, action, position = 'top-right' } = options;
+  notifications.set(n => [...n, { id, message, title, variant, action, position, timestamp: Date.now() }]);
+  if (duration > 0) {
+    setTimeout(() => dismissNotification(id), duration);
+  }
+  return id;
+}
+
+export function dismissNotification(id) {
+  notifications.set(n => n.filter(x => x.id !== id));
+}
+
+notify.success = (msg, opts) => notify(msg, { ...opts, variant: 'success' });
+notify.error = (msg, opts) => notify(msg, { ...opts, variant: 'error' });
+notify.warning = (msg, opts) => notify(msg, { ...opts, variant: 'warning' });
+notify.info = (msg, opts) => notify(msg, { ...opts, variant: 'info' });
+
+export function NotificationCenter() {
+  const variants = {
+    success: { color: theme.colors.success, icon: '✓' },
+    error: { color: theme.colors.danger, icon: '✗' },
+    warning: { color: theme.colors.warning, icon: '⚠' },
+    info: { color: theme.colors.info, icon: 'ℹ' },
+  };
+
+  const positions = {
+    'top-right': 'top:1rem;right:1rem;',
+    'top-left': 'top:1rem;left:1rem;',
+    'bottom-right': 'bottom:1rem;right:1rem;',
+    'bottom-left': 'bottom:1rem;left:1rem;',
+  };
+
+  // group by position
+  const grouped = $computed(() => {
+    const g = {};
+    for (const n of notifications()) {
+      const pos = n.position || 'top-right';
+      if (!g[pos]) g[pos] = [];
+      g[pos].push(n);
+    }
+    return g;
+  });
+
+  return h('div', null,
+    ...Object.entries(grouped()).map(([pos, items]) =>
+      h('div', {
+        key: pos,
+        style: `position:fixed;${positions[pos]}z-index:9999;display:flex;flex-direction:column;gap:0.5rem;max-width:360px;`,
+      },
+        items.map(n => {
+          const v = variants[n.variant];
+          return h('div', {
+            key: n.id,
+            style: `background:${theme.colors.surface};border-right:4px solid ${v.color};padding:0.75rem 1rem;border-radius:${theme.radius.md};box-shadow:${theme.shadows.lg};display:flex;align-items:flex-start;gap:0.75rem;animation:elmoorx-slideIn 0.3s;`,
+          },
+            h('div', { style: `width:24px;height:24px;border-radius:50%;background:${v.color};color:white;display:flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0;` }, v.icon),
+            h('div', { style: 'flex:1;' },
+              n.title && h('div', { style: `color:${theme.colors.text};font-weight:600;margin-bottom:0.15rem;` }, n.title),
+              h('div', { style: `color:${theme.colors.textMuted};font-size:${theme.fontSize.sm};` }, n.message),
+              n.action && h('button', {
+                onClick: () => { n.action.onClick?.(); dismissNotification(n.id); },
+                style: `margin-top:0.5rem;padding:0.25rem 0.75rem;background:${v.color};color:white;border:none;border-radius:${theme.radius.sm};cursor:pointer;font-size:${theme.fontSize.sm};`,
+              }, n.action.label)
+            ),
+            h('button', {
+              onClick: () => dismissNotification(n.id),
+              style: `background:none;border:none;color:${theme.colors.textMuted};cursor:pointer;font-size:1.25rem;line-height:1;padding:0;`,
+            }, '×')
+          );
+        })
+      )
+    )
+  );
+}
+
+// inject slideIn animation
+if (typeof document !== 'undefined' && !document.getElementById('elmoorx-slidein-keyframes')) {
+  const style = document.createElement('style');
+  style.id = 'elmoorx-slidein-keyframes';
+  style.textContent = '@keyframes elmoorx-slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }';
+  document.head.appendChild(style);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14) RICH TEXT EDITOR
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function RichTextEditor(props) {
+  const {
+    initialValue = '',
+    onChange,
+    placeholder = 'اكتب هنا...',
+    ...rest
+  } = props;
+
+  const content = $state(initialValue);
+  let editorRef = null;
+
+  const exec = (command, value = null) => {
+    document.execCommand(command, false, value);
+    if (editorRef) {
+      content.set(editorRef.innerHTML);
+      onChange?.(content());
+    }
+  };
+
+  const tools = [
+    { cmd: 'bold', icon: '𝐁', title: 'عريض' },
+    { cmd: 'italic', icon: '𝐼', title: 'مائل' },
+    { cmd: 'underline', icon: '𝑈', title: 'تحته خط' },
+    { cmd: 'strikeThrough', icon: '𝑆', title: 'يتوسطه خط' },
+    { sep: true },
+    { cmd: 'justifyRight', icon: '⇥', title: 'محاذاة لليمين' },
+    { cmd: 'justifyCenter', icon: '↔', title: 'توسيط' },
+    { cmd: 'justifyLeft', icon: '⇤', title: 'محاذاة لليسار' },
+    { sep: true },
+    { cmd: 'insertUnorderedList', icon: '•', title: 'قائمة نقطية' },
+    { cmd: 'insertOrderedList', icon: '1.', title: 'قائمة مرقمة' },
+    { sep: true },
+    { cmd: 'formatBlock', value: 'h1', icon: 'H1', title: 'عنوان 1' },
+    { cmd: 'formatBlock', value: 'h2', icon: 'H2', title: 'عنوان 2' },
+    { cmd: 'formatBlock', value: 'p', icon: '¶', title: 'فقرة' },
+    { sep: true },
+    { cmd: 'createLink', icon: '🔗', title: 'رابط', prompt: 'أدخل الرابط:' },
+    { cmd: 'insertImage', icon: '🖼', title: 'صورة', prompt: 'أدخل رابط الصورة:' },
+  ];
+
+  return h('div', {
+    style: `background:${theme.colors.surface};border:1px solid ${theme.colors.border};border-radius:${theme.radius.md};overflow:hidden;`,
+    ...rest,
+  },
+    // Toolbar
+    h('div', {
+      style: `display:flex;gap:0.25rem;padding:0.5rem;background:${theme.colors.dark};border-bottom:1px solid ${theme.colors.border};flex-wrap:wrap;`,
+    },
+      tools.map((tool, i) =>
+        tool.sep
+          ? h('div', { key: i, style: `width:1px;background:${theme.colors.border};margin:0 0.25rem;` })
+          : h('button', {
+              key: i,
+              title: tool.title,
+              onClick: () => {
+                let value = tool.value;
+                if (tool.prompt) value = window.prompt(tool.prompt);
+                if (value !== null) exec(tool.cmd, value);
+              },
+              style: `min-width:32px;height:32px;padding:0 0.5rem;background:${theme.colors.surface};color:${theme.colors.text};border:none;border-radius:${theme.radius.sm};cursor:pointer;font-size:0.9rem;`,
+            }, tool.icon)
+      )
+    ),
+    // Editor
+    h('div', {
+      contentEditable: true,
+      ref: (el) => { editorRef = el; },
+      onInput: (e) => {
+        content.set(e.target.innerHTML);
+        onChange?.(content());
+      },
+      'data-placeholder': placeholder,
+      style: `min-height:200px;padding:1rem;color:${theme.colors.text};outline:none;direction:rtl;line-height:1.7;:empty:before{content:attr(data-placeholder);color:${theme.colors.textMuted};}`,
+    })
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15) IMAGE WITH LAZY LOAD + FALLBACK
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function Image(props) {
+  const {
+    src,
+    alt = '',
+    fallback = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="%23334155"/></svg>',
+    lazy = true,
+    width,
+    height,
+    ...rest
+  } = props;
+
+  const loaded = $state(false);
+  const error = $state(false);
+  const currentSrc = $state(error() ? fallback : src);
+
+  return h('div', {
+    style: `position:relative;${width ? `width:${width};` : ''}${height ? `height:${height};` : ''}overflow:hidden;background:${theme.colors.dark};`,
+    ...rest,
+  },
+    !loaded() && !error() && h('div', {
+      style: `position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:${theme.colors.border};`,
+    }, h('div', { style: `width:24px;height:24px;border:3px solid ${theme.colors.textMuted};border-top-color:${theme.colors.primary};border-radius:50%;animation:elmoorx-spin 0.8s linear infinite;` })),
+    h('img', {
+      src: currentSrc(),
+      alt,
+      loading: lazy ? 'lazy' : 'eager',
+      onLoad: () => loaded.set(true),
+      onError: () => { error.set(true); currentSrc.set(fallback); loaded.set(true); },
+      style: `width:100%;height:100%;object-fit:cover;opacity:${loaded() ? 1 : 0};transition:opacity 0.3s;`,
+    })
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16) EXPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default {
@@ -671,4 +1044,12 @@ export default {
   Breadcrumb,
   Stepper,
   Tooltip,
+  TreeView,
+  Carousel,
+  DragDropList,
+  NotificationCenter,
+  notify,
+  dismissNotification,
+  RichTextEditor,
+  Image,
 };
