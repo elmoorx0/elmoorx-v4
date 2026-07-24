@@ -41,6 +41,8 @@ import { startRepl } from './cli/repl.mjs';
 import { listItems } from './cli/list.mjs';
 import { scanProject } from './cli/scan.mjs';
 import { metricsProject } from './cli/metrics.mjs';
+import { generateThemeCLI } from './cli/theme.mjs';
+import { graphProject } from './cli/graph.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -176,6 +178,14 @@ async function main() {
       await metricsProject();
       break;
     }
+    case 'theme': {
+      await generateThemeCLI(args);
+      break;
+    }
+    case 'graph': {
+      await graphProject(args);
+      break;
+    }
     case 'visual':
     case 'builder': {
       const port = parseInt(argValue(args, 'port', '8080'));
@@ -275,6 +285,8 @@ function printHelp() {
     elmoorx repl                       interactive shell للتجربة
     elmoorx scan                       فحص أمني للكود
     elmoorx metrics                    تحليل تعقيد وجودة الكود
+    elmoorx theme                      يولّد ثيمات مخصصة
+    elmoorx graph                      رسم بياني للتبعيات
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار

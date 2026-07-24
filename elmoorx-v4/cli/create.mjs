@@ -43,6 +43,7 @@ export async function createProject(name, template = 'default') {
     'graphql', 'charts', 'utils', 'markdown',
     'minifier', 'treeshake', 'sourcemap', 'compress',
     'e2e', 'imageopt', 'security', 'metrics',
+    'theme-gen', 'deps-graph', 'perf',
   ];
   // ملاحظة: ui/advanced.mjs و ui/extras.mjs داخل مجلد ui لذا يُنسخان تلقائياً
   for (const pkg of packagesToCopy) {
