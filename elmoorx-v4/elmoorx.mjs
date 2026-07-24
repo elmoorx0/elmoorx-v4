@@ -198,7 +198,8 @@ async function main() {
       break;
     }
     case 'doctor': {
-      const result = await doctor(process.cwd());
+      const fix = args.includes('--fix') || args.includes('-f');
+      const result = await doctor(process.cwd(), { fix });
       console.log(result);
       break;
     }
