@@ -39,6 +39,8 @@ import { watchProject } from './cli/watch.mjs';
 import { inspectFile } from './cli/inspect.mjs';
 import { startRepl } from './cli/repl.mjs';
 import { listItems } from './cli/list.mjs';
+import { scanProject } from './cli/scan.mjs';
+import { metricsProject } from './cli/metrics.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -166,6 +168,14 @@ async function main() {
       await listItems(category);
       break;
     }
+    case 'scan': {
+      await scanProject({ ignoreErrors: args.includes('--no-exit') });
+      break;
+    }
+    case 'metrics': {
+      await metricsProject();
+      break;
+    }
     case 'visual':
     case 'builder': {
       const port = parseInt(argValue(args, 'port', '8080'));
@@ -263,6 +273,8 @@ function printHelp() {
     elmoorx clean                      ينظف ملفات البناء والمؤقتة
     elmoorx list [category]            يعرض المكونات/القوالب/الـ packages
     elmoorx repl                       interactive shell للتجربة
+    elmoorx scan                       فحص أمني للكود
+    elmoorx metrics                    تحليل تعقيد وجودة الكود
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
