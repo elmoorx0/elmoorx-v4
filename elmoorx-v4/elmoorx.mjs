@@ -44,6 +44,8 @@ import { metricsProject } from './cli/metrics.mjs';
 import { generateThemeCLI } from './cli/theme.mjs';
 import { graphProject } from './cli/graph.mjs';
 import { splitCodeProject } from './cli/split.mjs';
+import { helpForCommand, bumpVersion, manageConfig } from './cli/help.mjs';
+import { generateChangelog } from './cli/changelog.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -203,6 +205,36 @@ async function main() {
       console.log(result);
       break;
     }
+    case 'help': {
+      const command = args.find(a => !a.startsWith('--'));
+      if (command) {
+        helpForCommand(command);
+      } else {
+        printHelp();
+      }
+      break;
+    }
+    case 'version': {
+      const bump = args.find(a => a.startsWith('--bump='));
+      if (bump) {
+        bumpVersion(bump.split('=')[1]);
+      } else {
+        console.log(`elmoorx/${VERSION}`);
+        console.log(`node/${process.version}`);
+        console.log(`platform/${process.platform} ${process.arch}`);
+      }
+      break;
+    }
+    case 'config': {
+      manageConfig(args);
+      break;
+    }
+    case 'changelog': {
+      const output = argValue(args, 'output', 'CHANGELOG.md');
+      const from = argValue(args, 'from', null);
+      await generateChangelog({ output, from });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -294,6 +326,10 @@ function printHelp() {
     elmoorx theme                      يولّد ثيمات مخصصة
     elmoorx graph                      رسم بياني للتبعيات
     elmoorx split                      تقسيم الكود تلقائياً
+    elmoorx changelog                  يولّد CHANGELOG من git
+    elmoorx version [--bump=X]         يعرض/يزيد الإصدار
+    elmoorx config                     عرض/تعديل الإعدادات
+    elmoorx help [command]             مساعدة تفصيلية لأمر
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
