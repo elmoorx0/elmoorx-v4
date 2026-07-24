@@ -44,8 +44,9 @@ export async function createProject(name, template = 'default') {
     'minifier', 'treeshake', 'sourcemap', 'compress',
     'e2e', 'imageopt', 'security', 'metrics',
     'theme-gen', 'deps-graph', 'perf',
+    'splitting', 'code-editor',
   ];
-  // ملاحظة: ui/advanced.mjs و ui/extras.mjs داخل مجلد ui لذا يُنسخان تلقائياً
+  // ملاحظة: ui/advanced.mjs, ui/extras.mjs, ui/data.mjs داخل مجلد ui لذا تُنسخ تلقائياً
   for (const pkg of packagesToCopy) {
     const src = join(FRAMEWORK_ROOT, pkg);
     if (existsSync(src)) {

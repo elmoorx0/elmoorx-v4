@@ -43,6 +43,7 @@ import { scanProject } from './cli/scan.mjs';
 import { metricsProject } from './cli/metrics.mjs';
 import { generateThemeCLI } from './cli/theme.mjs';
 import { graphProject } from './cli/graph.mjs';
+import { splitCodeProject } from './cli/split.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
@@ -186,6 +187,10 @@ async function main() {
       await graphProject(args);
       break;
     }
+    case 'split': {
+      await splitCodeProject({ out: argValue(args, 'out', 'dist') });
+      break;
+    }
     case 'visual':
     case 'builder': {
       const port = parseInt(argValue(args, 'port', '8080'));
@@ -287,6 +292,7 @@ function printHelp() {
     elmoorx metrics                    تحليل تعقيد وجودة الكود
     elmoorx theme                      يولّد ثيمات مخصصة
     elmoorx graph                      رسم بياني للتبعيات
+    elmoorx split                      تقسيم الكود تلقائياً
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
