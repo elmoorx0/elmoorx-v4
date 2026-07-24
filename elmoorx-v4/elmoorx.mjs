@@ -78,6 +78,12 @@ async function main() {
       await startDocsServer(port);
       break;
     }
+    case 'playground': {
+      const port = parseInt(argValue(args, 'port', '9200'));
+      const { startPlayground } = await import('./playground.mjs');
+      await startPlayground(port);
+      break;
+    }
     case 'upgrade': {
       const force = args.includes('--force') || args.includes('-f');
       const fromLocal = args.includes('--local');
@@ -311,6 +317,7 @@ function printHelp() {
     elmoorx add <component>            يضيف مكون جاهز للمشروع
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
     elmoorx docs [--port=9000]         يفتح موقع التوثيق التفاعلي
+    elmoorx playground [--port=9200]   يفتح code playground تفاعلي
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx test                       يشغّل اختبارات المشروع
     elmoorx bench                      يقيس أداء الإطار
