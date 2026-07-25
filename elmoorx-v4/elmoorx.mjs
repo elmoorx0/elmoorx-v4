@@ -47,6 +47,8 @@ import { splitCodeProject } from './cli/split.mjs';
 import { helpForCommand, bumpVersion, manageConfig } from './cli/help.mjs';
 import { generateChangelog } from './cli/changelog.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
+import { startProdServer } from './cli/serve-prod.mjs';
+import { publishPackage } from './cli/publish.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -241,6 +243,22 @@ async function main() {
       await generateChangelog({ output, from });
       break;
     }
+    case 'serve-prod':
+    case 'serve-prod-server': {
+      const port = parseInt(argValue(args, 'port', '3000'));
+      const ssr = args.includes('--ssr');
+      const noSpa = args.includes('--no-spa');
+      const apiDir = argValue(args, 'api', null);
+      await startProdServer({ port, ssr, spa: !noSpa, apiDir });
+      break;
+    }
+    case 'publish': {
+      const dryRun = args.includes('--dry-run');
+      const tag = argValue(args, 'tag', 'latest');
+      const registry = argValue(args, 'registry', 'https://registry.npmjs.org');
+      await publishPackage({ dryRun, tag, registry });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -334,6 +352,8 @@ function printHelp() {
     elmoorx graph                      رسم بياني للتبعيات
     elmoorx split                      تقسيم الكود تلقائياً
     elmoorx changelog                  يولّد CHANGELOG من git
+    elmoorx serve-prod [--ssr]         خادم إنتاج مع compression + API
+    elmoorx publish [--dry-run]        ينشر package على npm
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
