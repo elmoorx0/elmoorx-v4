@@ -49,6 +49,7 @@ import { generateChangelog } from './cli/changelog.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
 import { startProdServer } from './cli/serve-prod.mjs';
 import { publishPackage } from './cli/publish.mjs';
+import { generateReadme } from './cli/generate-readme.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -259,6 +260,13 @@ async function main() {
       await publishPackage({ dryRun, tag, registry });
       break;
     }
+    case 'generate-readme':
+    case 'gen-readme': {
+      const force = args.includes('--force') || args.includes('-f');
+      const output = argValue(args, 'output', 'README.md');
+      await generateReadme({ force, output });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -354,6 +362,7 @@ function printHelp() {
     elmoorx changelog                  يولّد CHANGELOG من git
     elmoorx serve-prod [--ssr]         خادم إنتاج مع compression + API
     elmoorx publish [--dry-run]        ينشر package على npm
+    elmoorx generate-readme            يولّد README.md من تحليل المشروع
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
