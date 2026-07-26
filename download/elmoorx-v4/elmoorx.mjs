@@ -44,7 +44,11 @@ import { metricsProject } from './cli/metrics.mjs';
 import { generateThemeCLI } from './cli/theme.mjs';
 import { graphProject } from './cli/graph.mjs';
 import { splitCodeProject } from './cli/split.mjs';
+import { helpForCommand, bumpVersion, manageConfig } from './cli/help.mjs';
+import { generateChangelog } from './cli/changelog.mjs';
 import { createFromTemplate } from './cli/templates.mjs';
+import { startProdServer } from './cli/serve-prod.mjs';
+import { publishPackage } from './cli/publish.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -74,6 +78,12 @@ async function main() {
     case 'docs': {
       const port = parseInt(argValue(args, 'port', '9000'));
       await startDocsServer(port);
+      break;
+    }
+    case 'playground': {
+      const port = parseInt(argValue(args, 'port', '9200'));
+      const { startPlayground } = await import('./playground.mjs');
+      await startPlayground(port);
       break;
     }
     case 'upgrade': {
@@ -203,6 +213,52 @@ async function main() {
       console.log(result);
       break;
     }
+    case 'help': {
+      const command = args.find(a => !a.startsWith('--'));
+      if (command) {
+        helpForCommand(command);
+      } else {
+        printHelp();
+      }
+      break;
+    }
+    case 'version': {
+      const bump = args.find(a => a.startsWith('--bump='));
+      if (bump) {
+        bumpVersion(bump.split('=')[1]);
+      } else {
+        console.log(`elmoorx/${VERSION}`);
+        console.log(`node/${process.version}`);
+        console.log(`platform/${process.platform} ${process.arch}`);
+      }
+      break;
+    }
+    case 'config': {
+      manageConfig(args);
+      break;
+    }
+    case 'changelog': {
+      const output = argValue(args, 'output', 'CHANGELOG.md');
+      const from = argValue(args, 'from', null);
+      await generateChangelog({ output, from });
+      break;
+    }
+    case 'serve-prod':
+    case 'serve-prod-server': {
+      const port = parseInt(argValue(args, 'port', '3000'));
+      const ssr = args.includes('--ssr');
+      const noSpa = args.includes('--no-spa');
+      const apiDir = argValue(args, 'api', null);
+      await startProdServer({ port, ssr, spa: !noSpa, apiDir });
+      break;
+    }
+    case 'publish': {
+      const dryRun = args.includes('--dry-run');
+      const tag = argValue(args, 'tag', 'latest');
+      const registry = argValue(args, 'registry', 'https://registry.npmjs.org');
+      await publishPackage({ dryRun, tag, registry });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -279,6 +335,7 @@ function printHelp() {
     elmoorx add <component>            يضيف مكون جاهز للمشروع
     elmoorx visual [--port=8080]       يفتح Visual Builder في المتصفح
     elmoorx docs [--port=9000]         يفتح موقع التوثيق التفاعلي
+    elmoorx playground [--port=9200]   يفتح code playground تفاعلي
     elmoorx static <dir> [--port=3000] يخدم ملفات ثابتة
     elmoorx test                       يشغّل اختبارات المشروع
     elmoorx bench                      يقيس أداء الإطار
@@ -294,6 +351,12 @@ function printHelp() {
     elmoorx theme                      يولّد ثيمات مخصصة
     elmoorx graph                      رسم بياني للتبعيات
     elmoorx split                      تقسيم الكود تلقائياً
+    elmoorx changelog                  يولّد CHANGELOG من git
+    elmoorx serve-prod [--ssr]         خادم إنتاج مع compression + API
+    elmoorx publish [--dry-run]        ينشر package على npm
+    elmoorx version [--bump=X]         يعرض/يزيد الإصدار
+    elmoorx config                     عرض/تعديل الإعدادات
+    elmoorx help [command]             مساعدة تفصيلية لأمر
     elmoorx doctor                     يفحص صحة المشروع
     elmoorx info                       يعرض معلومات البيئة
     elmoorx --version                  يطبع الإصدار
