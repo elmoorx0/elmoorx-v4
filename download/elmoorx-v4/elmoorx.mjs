@@ -54,6 +54,7 @@ import { dockerizeProject } from './cli/dockerize.mjs';
 import { startServeServer } from './cli/serve-dev.mjs';
 import { generateCI, initGit } from './cli/ci.mjs';
 import { scaffoldResource, generateDocs } from './cli/scaffold.mjs';
+import { migrateCommand, seedCommand, modelCommand } from './cli/database.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -316,6 +317,30 @@ async function main() {
       await generateDocs({ output });
       break;
     }
+    case 'migrate': {
+      const action = args.find(a => !a.startsWith('--')) || 'up';
+      const name = argValue(args, 'name', null);
+      await migrateCommand(action, { name });
+      break;
+    }
+    case 'seed': {
+      await seedCommand();
+      break;
+    }
+    case 'model': {
+      const name = args.find(a => !a.startsWith('--'));
+      if (!name) {
+        console.error('الاستخدام: elmoorx model <name> [--fields=name:type,...]');
+        process.exit(1);
+      }
+      const fieldsArg = argValue(args, 'fields', '');
+      const fields = fieldsArg ? fieldsArg.split(',').map(f => {
+        const [n, t] = f.split(':');
+        return { name: n.trim(), type: (t || 'string').trim(), required: true };
+      }) : [];
+      await modelCommand(name, { fields });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -418,6 +443,9 @@ function printHelp() {
     elmoorx init-git                   يهيّئ git repo + .gitignore + commit
     elmoorx scaffold <resource>        يولّد CRUD كامل (model + API + UI + tests)
     elmoorx docs-gen                   يولّد توثيق API من الكود
+    elmoorx migrate <create|up|down>   إدارة database migrations
+    elmoorx seed                       ملء قاعدة البيانات ببيانات تجريبية
+    elmoorx model <name>               يولّد model + migration من schema
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
