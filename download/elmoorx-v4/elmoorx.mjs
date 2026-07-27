@@ -50,6 +50,8 @@ import { createFromTemplate } from './cli/templates.mjs';
 import { startProdServer } from './cli/serve-prod.mjs';
 import { publishPackage } from './cli/publish.mjs';
 import { generateReadme } from './cli/generate-readme.mjs';
+import { dockerizeProject } from './cli/dockerize.mjs';
+import { startServeServer } from './cli/serve-dev.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -267,6 +269,20 @@ async function main() {
       await generateReadme({ force, output });
       break;
     }
+    case 'dockerize': {
+      const force = args.includes('--force') || args.includes('-f');
+      const port = parseInt(argValue(args, 'port', '3000'));
+      await dockerizeProject({ port, force });
+      break;
+    }
+    case 'serve': {
+      const port = parseInt(argValue(args, 'port', '3000'));
+      const apiDir = argValue(args, 'api', null);
+      const noHmr = args.includes('--no-hmr');
+      const noCors = args.includes('--no-cors');
+      await startServeServer({ port, apiDir, hmr: !noHmr, cors: !noCors });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -363,6 +379,8 @@ function printHelp() {
     elmoorx serve-prod [--ssr]         خادم إنتاج مع compression + API
     elmoorx publish [--dry-run]        ينشر package على npm
     elmoorx generate-readme            يولّد README.md من تحليل المشروع
+    elmoorx dockerize                  يولّد Dockerfile + docker-compose.yml
+    elmoorx serve [--api=DIR]          خادم تطوير + API + HMR + CORS
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
