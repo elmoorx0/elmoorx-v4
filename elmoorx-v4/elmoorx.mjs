@@ -52,6 +52,7 @@ import { publishPackage } from './cli/publish.mjs';
 import { generateReadme } from './cli/generate-readme.mjs';
 import { dockerizeProject } from './cli/dockerize.mjs';
 import { startServeServer } from './cli/serve-dev.mjs';
+import { generateCI, initGit } from './cli/ci.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -283,6 +284,17 @@ async function main() {
       await startServeServer({ port, apiDir, hmr: !noHmr, cors: !noCors });
       break;
     }
+    case 'ci': {
+      const platform = argValue(args, 'platform', 'github');
+      const force = args.includes('--force') || args.includes('-f');
+      await generateCI({ platform, force });
+      break;
+    }
+    case 'init-git': {
+      const force = args.includes('--force') || args.includes('-f');
+      await initGit({ force });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -381,6 +393,8 @@ function printHelp() {
     elmoorx generate-readme            يولّد README.md من تحليل المشروع
     elmoorx dockerize                  يولّد Dockerfile + docker-compose.yml
     elmoorx serve [--api=DIR]          خادم تطوير + API + HMR + CORS
+    elmoorx ci [--platform=github]     يولّد ملفات CI/CD (GitHub/GitLab)
+    elmoorx init-git                   يهيّئ git repo + .gitignore + commit
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
