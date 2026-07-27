@@ -55,6 +55,7 @@ import { startServeServer } from './cli/serve-dev.mjs';
 import { generateCI, initGit } from './cli/ci.mjs';
 import { scaffoldResource, generateDocs } from './cli/scaffold.mjs';
 import { migrateCommand, seedCommand, modelCommand } from './cli/database.mjs';
+import { startSSRServer, signJWT, verifyJWT } from './ssr-server/index.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -286,6 +287,20 @@ async function main() {
       await startServeServer({ port, apiDir, hmr: !noHmr, cors: !noCors });
       break;
     }
+    case 'ssr': {
+      const port = parseInt(argValue(args, 'port', '3000'));
+      const apiDir = argValue(args, 'api', null);
+      const noCors = args.includes('--no-cors');
+      const noRateLimit = args.includes('--no-rate-limit');
+      const authSecret = argValue(args, 'auth-secret', null);
+      await startSSRServer({
+        port, apiDir,
+        cors: !noCors,
+        rateLimit: !noRateLimit,
+        auth: authSecret ? { secret: authSecret, unless: ['/api/auth/login', '/api/auth/register'] } : null,
+      });
+      break;
+    }
     case 'ci': {
       const platform = argValue(args, 'platform', 'github');
       const force = args.includes('--force') || args.includes('-f');
@@ -439,6 +454,7 @@ function printHelp() {
     elmoorx generate-readme            يولّد README.md من تحليل المشروع
     elmoorx dockerize                  يولّد Dockerfile + docker-compose.yml
     elmoorx serve [--api=DIR]          خادم تطوير + API + HMR + CORS
+    elmoorx ssr [--api=DIR]            خادم SSR إنتاجي (routing + hydration + JWT + rate limit)
     elmoorx ci [--platform=github]     يولّد ملفات CI/CD (GitHub/GitLab)
     elmoorx init-git                   يهيّئ git repo + .gitignore + commit
     elmoorx scaffold <resource>        يولّد CRUD كامل (model + API + UI + tests)
