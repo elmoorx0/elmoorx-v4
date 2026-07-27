@@ -95,7 +95,28 @@ export async function buildProject(rootDir, options = {}) {
     }
   }
 
-  // 9) إحصائيات
+  // 9) CSS extraction — استخراج الأنماط من المكونات إلى ملف .css
+  console.log(`  │ استخراج CSS...`);
+  try {
+    const cssContent = extractCSSFromBuild(outPath);
+    if (cssContent) {
+      writeFileSync(join(outPath, 'styles.css'), cssContent);
+      // أضف <link> للـ CSS في index.html
+      const indexPath = join(outPath, 'index.html');
+      if (existsSync(indexPath)) {
+        let html = readFileSync(indexPath, 'utf8');
+        if (!html.includes('styles.css')) {
+          html = html.replace('</head>', '<link rel="stylesheet" href="/styles.css"></head>');
+          writeFileSync(indexPath, html);
+        }
+      }
+      console.log(`  │ ✓ styles.css (${formatBytes(Buffer.byteLength(cssContent))})`);
+    }
+  } catch (err) {
+    console.log(`  │ ⚠ CSS extraction: ${err.message}`);
+  }
+
+  // 10) إحصائيات
   const stats = computeStats(outPath);
   console.log(`  ─────────────────────────────────────`);
   console.log(`  │ ✓ مكتمل`);
@@ -335,6 +356,51 @@ function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// استخراج CSS من ملفات JS المبنية
+function extractCSSFromBuild(distPath) {
+  let allCSS = '';
+  const walk = (dir) => {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(fullPath);
+        } else if (entry.name.endsWith('.mjs') || entry.name.endsWith('.js')) {
+          const content = readFileSync(fullPath, 'utf8');
+          // استخرج style strings من الكود
+          const styleMatches = content.matchAll(/style:\s*['"`]([^'"`]+)['"`]/g);
+          for (const m of styleMatches) {
+            // حوّل inline style إلى CSS rules
+            const styles = m[1].split(';').filter(s => s.trim());
+            // لا يمكن استخراجها كـ CSS rules مباشرة (لا selectors) — نجمّعها كـ utility classes
+          }
+          // استخرج @elmoorx/css imports
+          const cssImportMatch = content.match(/import\s+['"]\.\/[^'"]*\.css['"]/g);
+          if (cssImportMatch) {
+            for (const imp of cssImportMatch) {
+              const cssPath = imp.match(/['"]([^'"]+)['"]/)[1];
+              const resolvedPath = join(dirname(fullPath), cssPath);
+              if (existsSync(resolvedPath)) {
+                allCSS += readFileSync(resolvedPath, 'utf8') + '\n';
+              }
+            }
+          }
+        } else if (entry.name.endsWith('.css')) {
+          allCSS += readFileSync(fullPath, 'utf8') + '\n';
+        }
+      }
+    } catch {}
+  };
+  walk(distPath);
+
+  // أضف CSS الافتراضي للـ theme
+  if (allCSS) {
+    allCSS = `/* Elmoorx v4 — Extracted CSS */\n:root{--color-primary:#0ea5e9;--color-success:#10b981;--color-warning:#f59e0b;--color-danger:#ef4444;--color-bg:#0f172a;--color-surface:#1e293b;--color-text:#e2e8f0;--color-muted:#94a3b8;--color-border:#334155}\n` + allCSS;
+  }
+
+  return allCSS || null;
 }
 
 import { fileURLToPath } from 'node:url';

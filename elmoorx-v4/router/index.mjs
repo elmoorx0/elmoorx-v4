@@ -215,10 +215,24 @@ function DefaultNotFound() {
 
 export function Link(props) {
   const { to, children, prefetch = true, ...rest } = props;
+  const prefetched = { current: false };
+
   const handleMouseEnter = () => {
-    if (!prefetch) return;
+    if (!prefetch || prefetched.current) return;
+    prefetched.current = true;
     if (props.onMouseEnter) props.onMouseEnter();
+
+    // إنشاء <link rel="prefetch"> تلقائياً
+    if (typeof document !== 'undefined') {
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = to;
+      link.as = 'fetch';
+      link.crossOrigin = 'anonymous';
+      document.head.appendChild(link);
+    }
   };
+
   return h('a', {
     href: to,
     onMouseEnter: handleMouseEnter,

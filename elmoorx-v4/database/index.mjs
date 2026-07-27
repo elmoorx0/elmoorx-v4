@@ -41,6 +41,12 @@ class SQLiteBackend {
 
   exec(sql, params = []) {
     if (!this.db) throw new Error('DB غير متصل');
+    // استخدم exec مباشرة لكل SQL (يعمل مع CREATE, INSERT, UPDATE, DELETE, BEGIN, COMMIT, ROLLBACK)
+    if (params.length === 0) {
+      this.db.exec(sql);
+      return {};
+    }
+    // مع params استخدم prepare + run
     const stmt = this.db.prepare(sql);
     return stmt.run(...params);
   }
@@ -193,6 +199,41 @@ class Database {
   async exec(...args) {
     if (this.type === 'sqlite') return this.backend.exec(...args);
     return this.backend.exec(...args);
+  }
+
+  /**
+   * Transaction — يبدأ transaction صريح
+   */
+  async transaction(fn) {
+    if (this.type === 'sqlite') {
+      this.backend.exec('BEGIN TRANSACTION');
+      try {
+        const result = await fn(this);
+        this.backend.exec('COMMIT');
+        return result;
+      } catch (err) {
+        this.backend.exec('ROLLBACK');
+        throw err;
+      }
+    }
+    // IndexedDB: transactions تُدار تلقائياً
+    return fn(this);
+  }
+
+  /**
+   * Batch — ينفّذ عدة عمليات في transaction واحد
+   */
+  async batch(operations) {
+    return this.transaction(async (db) => {
+      const results = [];
+      for (const op of operations) {
+        if (op.type === 'insert') results.push(await db.insert(op.table, op.data));
+        else if (op.type === 'update') results.push(await db.update(op.table, op.data, op.where));
+        else if (op.type === 'delete') results.push(await db.delete(op.table, op.where));
+        else if (op.type === 'exec') results.push(await db.exec(op.sql, op.params));
+      }
+      return results;
+    });
   }
 
   /**

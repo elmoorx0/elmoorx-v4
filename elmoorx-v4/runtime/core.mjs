@@ -196,22 +196,69 @@ export function renderFragment(...children) {
   return { tag: Fragment, props: {}, children };
 }
 
-// تحويل عقدة إلى HTML string (للـ SSR)
-export function renderToString(node) {
+// تتبع سياق SSR الحالي
+let ssrContext = null;
+
+export function renderToString(node, options = {}) {
+  // تهيئة سياق SSR
+  const prevContext = ssrContext;
+  if (!ssrContext) {
+    ssrContext = {
+      islands: [],
+      css: new Set(),
+      serializeState: {},
+      ...options,
+    };
+  }
+
+  const html = _renderToString(node);
+
+  // إذا كان هذا النداء الجذري، نظّف السياق
+  if (!prevContext) {
+    ssrContext = null;
+  }
+
+  return html;
+}
+
+function _renderToString(node) {
   if (node === null || node === undefined || node === false) return '';
   if (typeof node === 'string') return escapeHtml(node);
   if (typeof node === 'number') return String(node);
   if (typeof node === 'function') return escapeHtml(String(node()));
-  if (Array.isArray(node)) return node.map(renderToString).join('');
+  if (Array.isArray(node)) return node.map(_renderToString).join('');
   if (typeof node === 'object' && node.tag) {
-    if (node.tag === Fragment) return node.children.map(renderToString).join('');
+    // Fragment
+    if (node.tag === Fragment) return node.children.map(_renderToString).join('');
+
+    // Component function — اعرض ولفّ بـ island wrapper إذا احتوى على events
     if (typeof node.tag === 'function') {
-      // مرّر children كـ prop للـ components
+      const componentName = node.tag.name || 'Component';
       const props = { ...node.props, children: node.children };
-      return renderToString(node.tag(props));
+      const inner = _renderToString(node.tag(props));
+
+      // تحقق إذا كان المكون يحتوي على event handlers
+      const hasEvents = checkHasEvents(node.props);
+
+      // إذا كان في سياق SSR والمكون تفاعلي، لفّه بـ island wrapper
+      if (ssrContext && hasEvents && !node.props.__noIsland) {
+        const islandId = `island_${ssrContext.islands.length}`;
+        const islandProps = encodeURIComponent(JSON.stringify(
+          Object.entries(node.props || {})
+            .filter(([k, v]) => !k.startsWith('on') && typeof v !== 'function' && k !== 'children')
+            .reduce((obj, [k, v]) => { obj[k] = v; return obj; }, {})
+        ));
+        ssrContext.islands.push({ id: islandId, name: componentName });
+
+        return `<div data-elmoorx-island="${componentName}" data-island-id="${islandId}" data-props="${islandProps}">${inner}</div>`;
+      }
+
+      return inner;
     }
+
+    // Regular element
     const attrs = Object.entries(node.props || {})
-      .filter(([k]) => k !== 'children')
+      .filter(([k]) => k !== 'children' && k !== '__noIsland')
       .map(([k, v]) => {
         if (v === null || v === undefined || v === false) return '';
         if (k === 'className') k = 'class';
@@ -219,15 +266,41 @@ export function renderToString(node) {
         if (k === 'style' && typeof v === 'object') {
           return ` style="${Object.entries(v).map(([p, val]) => `${camelToKebab(p)}:${val}`).join(';')}"`;
         }
+        if (k === 'style' && typeof v === 'string') {
+          return ` style="${escapeHtml(v)}"`;
+        }
+        if (k === 'dangerouslySetInnerHTML') {
+          return ''; // يتم معالجته أدناه
+        }
         return ` ${k}="${escapeHtml(String(v))}"`;
       })
       .join('');
+
+    // dangerouslySetInnerHTML support
+    const hasDangerousHTML = node.props?.dangerouslySetInnerHTML?.__html;
     const isSelfClosing = ['img', 'br', 'hr', 'input', 'meta', 'link', 'source', 'area', 'base', 'col', 'embed', 'param', 'track', 'wbr'].includes(node.tag);
     if (isSelfClosing) return `<${node.tag}${attrs} />`;
-    const inner = node.children.map(renderToString).join('');
+    if (hasDangerousHTML) return `<${node.tag}${attrs}>${hasDangerousHTML}</${node.tag}>`;
+    const inner = node.children.map(_renderToString).join('');
     return `<${node.tag}${attrs}>${inner}</${node.tag}>`;
   }
   return '';
+}
+
+// تحقق إذا كان العنصر يحتوي على event handlers
+function checkHasEvents(props) {
+  if (!props) return false;
+  return Object.keys(props).some(k => k.startsWith('on') && typeof props[k] === 'function');
+}
+
+// الحصول على بيانات SSR (islands + state)
+export function getSSRData() {
+  if (!ssrContext) return null;
+  return {
+    islands: ssrContext.islands,
+    css: Array.from(ssrContext.css),
+    state: ssrContext.serializeState,
+  };
 }
 
 function escapeHtml(s) {

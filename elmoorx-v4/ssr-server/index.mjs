@@ -13,13 +13,13 @@
  */
 
 import { createServer as createHttpServer } from 'node:http';
-import { existsSync, readFileSync, statSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, readdirSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join, extname, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { compile, liveCompile, clearCompileCache } from '../compiler/index.mjs';
-import { renderToString, h } from '../runtime/core.mjs';
+import { renderToString, h, getSSRData } from '../runtime/core.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -196,11 +196,13 @@ async function renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRe
     }
   }
 
-  // Render component
+  // Render component with SSR context (islands + state)
   let appHtml = '';
+  let ssrData = null;
   if (match.route.component) {
     try {
       appHtml = renderToString(match.route.component({ data, params: match.params }));
+      ssrData = getSSRData();
     } catch (err) {
       appHtml = `<div style="padding:2rem;color:red;">Render Error: ${err.message}</div>`;
     }
@@ -213,6 +215,7 @@ async function renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRe
         const mod = await loadModuleDynamic(compiled);
         if (mod.default) {
           appHtml = renderToString(mod.default({ data, params: match.params }));
+          ssrData = getSSRData();
         }
       }
     } catch (err) {
@@ -220,19 +223,28 @@ async function renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRe
     }
   }
 
-  const html = await buildHTML({
-    title: match.route.title || 'Elmoorx App',
-    appHtml, data, params: match.params, frameworkDir, path,
-  });
-
+  // Streaming SSR: send head first, then body, then scripts
   res.writeHead(200, {
     'Content-Type': 'text/html; charset=utf-8',
+    'Transfer-Encoding': 'chunked',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Cache-Control': 'no-cache, no-store, must-revalidate',
   });
-  res.end(html);
+
+  // Stream: head + opening
+  const runtimePath = existsSync(join(frameworkDir, 'runtime', 'core.mjs')) ? '/runtime/core.mjs' : '/.elmoorx/runtime/core.mjs';
+  const head = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>${match.route.title || 'Elmoorx App'}</title><link rel="manifest" href="/manifest.json"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui}#app{min-height:100vh}</style></head><body><div id="app">`;
+  res.write(head);
+
+  // Stream: app HTML (the actual rendered content)
+  res.write(appHtml);
+
+  // Stream: closing + state + hydration
+  const islandData = ssrData ? JSON.stringify({ islands: ssrData.islands, data, params: match.params, path }).replace(/</g, '\\u003c') : JSON.stringify({ data, params: match.params, path }).replace(/</g, '\\u003c');
+  const tail = `</div><script>window.__ELMOORX_SSR_DATA__=${islandData};</script><script type="module">import{hydrateIslands}from'${runtimePath}';hydrateIslands();</script><script>window.addEventListener('error',function(e){var o=document.createElement('div');o.style.cssText='position:fixed;inset:0;background:rgba(239,68,68,0.95);color:white;padding:2rem;z-index:99999;overflow:auto;font-family:monospace;direction:ltr;';o.innerHTML='<h2>Runtime Error</h2><pre>'+e.message+'\\n\\n'+(e.error&&e.error.stack||'')+'</pre><button onclick="this.parentElement.remove()" style="margin-top:1rem;padding:0.5rem 1rem;background:white;color:#ef4444;border:none;border-radius:4px;cursor:pointer;">Close</button>';document.body.appendChild(o);});</script></body></html>`;
+  res.end(tail);
 }
 
 async function buildHTML({ title, appHtml, data, params, frameworkDir, path, status }) {
@@ -434,22 +446,82 @@ function corsMiddleware() {
 }
 
 function rateLimitMiddleware(options = {}) {
-  const { windowMs = 60000, max = 100, message = 'تجاوزت حد الطلبات' } = options;
+  const {
+    windowMs = 60000, max = 100, message = 'تجاوزت حد الطلبات',
+    store = 'memory', storePath = './data/ratelimit',
+  } = options;
+
   const clients = new Map();
-  setInterval(() => { const now = Date.now(); for (const [ip, d] of clients) if (now - d.startTime > windowMs) clients.delete(ip); }, windowMs);
+  let fileStoreDir = null;
+
+  if (store === 'file') {
+    fileStoreDir = resolve(storePath);
+    if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
+  }
+
+  // Cleanup
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, d] of clients) {
+      if (now - d.startTime > windowMs) {
+        clients.delete(ip);
+        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json')); } catch {} }
+      }
+    }
+  }, windowMs);
+
+  const persistClient = (ip, data) => {
+    if (fileStoreDir) {
+      try { writeFileSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json'), JSON.stringify(data)); } catch {}
+    }
+  };
+
+  const loadClient = (ip) => {
+    if (!fileStoreDir) return null;
+    const filePath = join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json');
+    if (existsSync(filePath)) {
+      try { return JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
+    }
+    return null;
+  };
 
   return async (ctx) => {
-    const ip = ctx.req.headers['x-forwarded-for'] || ctx.req.socket.remoteAddress || 'unknown';
+    const ip = ctx.req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ctx.req.socket.remoteAddress || 'unknown';
     const now = Date.now();
-    if (!clients.has(ip)) { clients.set(ip, { count: 1, startTime: now }); return true; }
-    const client = clients.get(ip);
-    if (now - client.startTime > windowMs) { client.count = 1; client.startTime = now; return true; }
+
+    let client = clients.get(ip);
+    if (!client && fileStoreDir) {
+      client = loadClient(ip);
+      if (client) clients.set(ip, client);
+    }
+
+    if (!client || now - client.startTime > windowMs) {
+      client = { count: 1, startTime: now };
+      clients.set(ip, client);
+      persistClient(ip, client);
+      return true;
+    }
+
     client.count++;
+    persistClient(ip, client);
+
     if (client.count > max) {
-      ctx.res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': Math.ceil(windowMs / 1000) });
+      ctx.res.writeHead(429, {
+        'Content-Type': 'application/json',
+        'Retry-After': Math.ceil(windowMs / 1000),
+        'X-RateLimit-Limit': String(max),
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': String(Math.ceil((client.startTime + windowMs) / 1000)),
+      });
       ctx.res.end(JSON.stringify({ error: message }));
       return false;
     }
+
+    // Set rate limit headers
+    ctx.res.setHeader('X-RateLimit-Limit', String(max));
+    ctx.res.setHeader('X-RateLimit-Remaining', String(Math.max(0, max - client.count)));
+    ctx.res.setHeader('X-RateLimit-Reset', String(Math.ceil((client.startTime + windowMs) / 1000)));
+
     return true;
   };
 }
@@ -504,17 +576,50 @@ function sessionMiddleware(options = {}) {
     httpOnly = true,
     secure = false,
     sameSite = 'lax',
+    store = 'memory', // 'memory' | 'file'
+    storePath = './data/sessions',
   } = options;
 
   const sessions = new Map();
+  let fileStoreDir = null;
+
+  // Initialize file store if needed
+  if (store === 'file') {
+    fileStoreDir = resolve(storePath);
+    if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
+    // Load existing sessions on startup
+    try {
+      for (const file of readdirSync(fileStoreDir)) {
+        if (file.endsWith('.json')) {
+          const data = JSON.parse(readFileSync(join(fileStoreDir, file), 'utf8'));
+          if (data.expires > Date.now()) {
+            sessions.set(file.replace('.json', ''), data);
+          } else {
+            unlinkSync(join(fileStoreDir, file)); // cleanup expired
+          }
+        }
+      }
+    } catch {}
+  }
 
   // Cleanup expired sessions
   setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
-      if (session.expires < now) sessions.delete(id);
+      if (session.expires < now) {
+        sessions.delete(id);
+        if (fileStoreDir && existsSync(join(fileStoreDir, id + '.json'))) {
+          try { unlinkSync(join(fileStoreDir, id + '.json')); } catch {}
+        }
+      }
     }
   }, 3600000);
+
+  const persistSession = (id, session) => {
+    if (fileStoreDir) {
+      try { writeFileSync(join(fileStoreDir, id + '.json'), JSON.stringify(session)); } catch {}
+    }
+  };
 
   return async (ctx) => {
     const cookies = parseCookies(ctx.req.headers.cookie || '');
@@ -526,8 +631,23 @@ function sessionMiddleware(options = {}) {
       session = sessions.get(sessionId);
       if (session.expires < Date.now()) {
         sessions.delete(sessionId);
+        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
         session = null;
         sessionId = null;
+      }
+    }
+
+    // Try loading from file store if not in memory
+    if (!session && fileStoreDir && sessionId) {
+      const filePath = join(fileStoreDir, sessionId + '.json');
+      if (existsSync(filePath)) {
+        try {
+          const data = JSON.parse(readFileSync(filePath, 'utf8'));
+          if (data.expires > Date.now()) {
+            session = data;
+            sessions.set(sessionId, session);
+          }
+        } catch {}
       }
     }
 
@@ -538,10 +658,15 @@ function sessionMiddleware(options = {}) {
         data: {},
         expires: Date.now() + maxAge * 1000,
         get: (key) => session.data[key],
-        set: (key, value) => { session.data[key] = value; },
-        destroy: () => { sessions.delete(sessionId); session.data = {}; },
+        set: (key, value) => { session.data[key] = value; persistSession(sessionId, session); },
+        destroy: () => {
+          sessions.delete(sessionId);
+          if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
+          session.data = {};
+        },
       };
       sessions.set(sessionId, session);
+      persistSession(sessionId, session);
 
       // Set cookie
       ctx.res.setHeader('Set-Cookie', `${cookieName}=${sessionId}; Path=/; Max-Age=${maxAge}; HttpOnly=${httpOnly}; SameSite=${sameSite}${secure ? '; Secure' : ''}`);
