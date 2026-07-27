@@ -1,2 +1,5 @@
 skills/
 node_modules/
+framework-source/
+*.elmoorx-test-cache/
+elmoorx-v4/.elmoorx-test-cache/

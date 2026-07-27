@@ -48,7 +48,7 @@ describe('Security — scanFile', () => {
   });
 
   it('should detect hardcoded secrets', () => {
-    const code = 'const apiKey = "sk_test_REDACTED";';
+    const code = 'const apiKey = "sk_test_REDACTED_PLACEHOLDER";';
     const rule = RULES.find(r => r.id === 'no-hardcoded-secrets');
     expect(rule.check(code)).toBeGreaterThan(0);
   });

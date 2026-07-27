@@ -27,3 +27,6 @@ tmp/
 # Note: .elmoorx/ is intentionally NOT ignored
 # because it contains the framework needed to run.
 # Each project is self-contained.
+framework-source/
+.elmoorx-test-cache/
+*.tar.gz
