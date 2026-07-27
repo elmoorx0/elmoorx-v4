@@ -27,11 +27,17 @@ describe('SSR Server — JWT', () => {
   });
 
   it('should reject expired token', async () => {
-    const token = signJWT({ userId: 1 }, secret, { expiresIn: '1s' });
-    // wait 1.5s for expiry
-    await new Promise(r => setTimeout(r, 1500));
+    const { createHmac } = await import('node:crypto');
+    const pastTime = Math.floor(Date.now() / 1000) - 10;
+    const headerObj = { alg: 'HS256', typ: 'JWT' };
+    const payloadObj = { userId: 1, exp: pastTime };
+    const headerStr = Buffer.from(JSON.stringify(headerObj)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const payloadStr = Buffer.from(JSON.stringify(payloadObj)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const sig = createHmac('sha256', secret).update(headerStr + '.' + payloadStr).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const expiredToken = headerStr + '.' + payloadStr + '.' + sig;
+
     let error = null;
-    try { verifyJWT(token, secret); }
+    try { verifyJWT(expiredToken, secret); }
     catch (e) { error = e; }
     expect(error).not.toBe(null);
     expect(error.message).toContain('expired');
