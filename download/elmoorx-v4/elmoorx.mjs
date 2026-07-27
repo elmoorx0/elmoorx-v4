@@ -53,6 +53,7 @@ import { generateReadme } from './cli/generate-readme.mjs';
 import { dockerizeProject } from './cli/dockerize.mjs';
 import { startServeServer } from './cli/serve-dev.mjs';
 import { generateCI, initGit } from './cli/ci.mjs';
+import { scaffoldResource, generateDocs } from './cli/scaffold.mjs';
 import { doctor, info } from './cli/commands.mjs';
 
 const VERSION = '4.0.0';
@@ -295,6 +296,26 @@ async function main() {
       await initGit({ force });
       break;
     }
+    case 'scaffold': {
+      const resource = args.find(a => !a.startsWith('--'));
+      if (!resource) {
+        console.error('الاستخدام: elmoorx scaffold <resource> [--fields=name:string,age:number]');
+        process.exit(1);
+      }
+      const fieldsArg = argValue(args, 'fields', '');
+      const fields = fieldsArg ? fieldsArg.split(',').map(f => {
+        const [name, type] = f.split(':');
+        return { name: name.trim(), type: (type || 'string').trim() };
+      }) : [];
+      await scaffoldResource(resource, { fields });
+      break;
+    }
+    case 'docs-gen':
+    case 'docs-generate': {
+      const output = argValue(args, 'output', 'API.md');
+      await generateDocs({ output });
+      break;
+    }
     case 'test': {
       const watch = args.includes('--watch') || args.includes('-w');
       await runTests({ watch });
@@ -395,6 +416,8 @@ function printHelp() {
     elmoorx serve [--api=DIR]          خادم تطوير + API + HMR + CORS
     elmoorx ci [--platform=github]     يولّد ملفات CI/CD (GitHub/GitLab)
     elmoorx init-git                   يهيّئ git repo + .gitignore + commit
+    elmoorx scaffold <resource>        يولّد CRUD كامل (model + API + UI + tests)
+    elmoorx docs-gen                   يولّد توثيق API من الكود
     elmoorx version [--bump=X]         يعرض/يزيد الإصدار
     elmoorx config                     عرض/تعديل الإعدادات
     elmoorx help [command]             مساعدة تفصيلية لأمر
