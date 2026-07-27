@@ -293,11 +293,17 @@ async function main() {
       const noCors = args.includes('--no-cors');
       const noRateLimit = args.includes('--no-rate-limit');
       const authSecret = argValue(args, 'auth-secret', null);
+      const ws = args.includes('--ws') || args.includes('--websocket');
+      const sessions = args.includes('--sessions');
+      const uploadDir = argValue(args, 'upload-dir', null);
       await startSSRServer({
         port, apiDir,
         cors: !noCors,
         rateLimit: !noRateLimit,
         auth: authSecret ? { secret: authSecret, unless: ['/api/auth/login', '/api/auth/register'] } : null,
+        websocket: ws,
+        sessions,
+        uploadDir,
       });
       break;
     }
@@ -454,7 +460,8 @@ function printHelp() {
     elmoorx generate-readme            يولّد README.md من تحليل المشروع
     elmoorx dockerize                  يولّد Dockerfile + docker-compose.yml
     elmoorx serve [--api=DIR]          خادم تطوير + API + HMR + CORS
-    elmoorx ssr [--api=DIR]            خادم SSR إنتاجي (routing + hydration + JWT + rate limit)
+    elmoorx ssr [--api=DIR] [--ws] [--sessions] [--upload-dir=DIR]
+                                       خادم SSR إنتاجي كامل (routing+hydration+JWT+WS+sessions+uploads)
     elmoorx ci [--platform=github]     يولّد ملفات CI/CD (GitHub/GitLab)
     elmoorx init-git                   يهيّئ git repo + .gitignore + commit
     elmoorx scaffold <resource>        يولّد CRUD كامل (model + API + UI + tests)

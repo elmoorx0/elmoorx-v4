@@ -43,6 +43,8 @@ export async function startSSRServer(options = {}) {
     publicDir = 'public', staticDir = 'dist',
     ssr = true, cors = true, rateLimit = true,
     auth = null, onRender = null,
+    websocket = false, sessions = false,
+    uploadDir = null, maxUploadSize = 10 * 1024 * 1024,
   } = options;
 
   const rootDir = resolve(root);
@@ -54,6 +56,7 @@ export async function startSSRServer(options = {}) {
   const middlewares = [];
   if (cors) middlewares.push(corsMiddleware());
   if (rateLimit) middlewares.push(rateLimitMiddleware());
+  if (sessions) middlewares.push(sessionMiddleware());
   if (auth) middlewares.push(authMiddleware(auth));
 
   // Load routes
@@ -68,9 +71,12 @@ export async function startSSRServer(options = {}) {
   console.log(`  │ CORS:        ${cors ? '✓' : '✗'}`);
   console.log(`  │ Rate limit:  ${rateLimit ? '✓' : '✗'}`);
   console.log(`  │ Auth (JWT):  ${auth ? '✓' : '✗'}`);
+  console.log(`  │ WebSocket:   ${websocket ? '✓' : '✗'}`);
+  console.log(`  │ Sessions:    ${sessions ? '✓' : '✗'}`);
+  console.log(`  │ File upload: ${uploadDir ? '✓' : '✗'}`);
 
   const server = createHttpServer(async (req, res) => {
-    const ctx = { req, res, url: new URL(req.url, `http://${req.headers.host}`), state: {} };
+    const ctx = { req, res, url: new URL(req.url, `http://${req.headers.host}`), state: {}, session: null };
 
     // Run middleware chain
     for (const mw of middlewares) {
@@ -79,11 +85,38 @@ export async function startSSRServer(options = {}) {
     }
 
     try {
-      await handleSSRRequest(req, res, { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx });
+      await handleSSRRequest(req, res, { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx, uploadDir, maxUploadSize });
     } catch (err) {
       handleServerError(res, err);
     }
   });
+
+  // WebSocket support
+  if (websocket) {
+    try {
+      const { WebSocketServer } = await import('../vendor/ws-shim.mjs');
+      const wss = new WebSocketServer({ server, path: '/__ws__' });
+      const wsClients = new Set();
+      wss.on('connection', (ws, req) => {
+        wsClients.add(ws);
+        ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
+        ws.on('message', (data) => {
+          try {
+            const msg = JSON.parse(data.toString());
+            // Broadcast to all clients
+            const broadcast = JSON.stringify({ type: 'message', data: msg, timestamp: Date.now() });
+            for (const client of wsClients) {
+              try { client.send(broadcast); } catch {}
+            }
+          } catch {}
+        });
+        ws.on('close', () => wsClients.delete(ws));
+      });
+      console.log(`  │ WS clients:  ready`);
+    } catch (err) {
+      console.log(`  │ WS:          ⚠ ${err.message}`);
+    }
+  }
 
   server.listen(port, () => {
     console.log(`  │ الحالة:      جاهز ✓`);
@@ -357,7 +390,18 @@ async function handleAPIRoute(req, res, path, apiDir, ctx) {
     if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch {}
+      const raw = Buffer.concat(chunks);
+      const contentType = req.headers['content-type'] || '';
+
+      if (contentType.includes('application/json')) {
+        try { body = JSON.parse(raw.toString()); } catch {}
+      } else if (contentType.includes('multipart/form-data') && config.uploadDir) {
+        body = await handleFileUpload(raw, contentType, config.uploadDir, config.maxUploadSize);
+      } else if (contentType.includes('application/x-www-form-urlencoded')) {
+        body = parseUrlEncoded(raw.toString());
+      } else {
+        body = raw.toString();
+      }
     }
 
     const result = await fn({
@@ -417,29 +461,109 @@ function authMiddleware(options = {}) {
     if (unless.some(p => path.startsWith(p) || path === p)) return true;
     if (!path.startsWith('/api/') && !path.startsWith('/auth/')) return true;
 
+    // Try JWT from Authorization header
     const authHeader = ctx.req.headers['authorization'];
-    if (!authHeader?.startsWith('Bearer ')) {
-      if (path.startsWith('/api/')) {
-        ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
-        ctx.res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return false;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        ctx.user = verifyJWT(authHeader.slice(7), secret);
+        ctx.state.user = ctx.user;
+        return true;
+      } catch {
+        if (path.startsWith('/api/')) {
+          ctx.res.writeHead(403, { 'Content-Type': 'application/json' });
+          ctx.res.end(JSON.stringify({ error: 'Invalid token' }));
+          return false;
+        }
       }
+    }
+
+    // Try session from cookie
+    if (ctx.session?.user) {
+      ctx.user = ctx.session.user;
+      ctx.state.user = ctx.user;
       return true;
     }
 
-    try {
-      ctx.user = verifyJWT(authHeader.slice(7), secret);
-      ctx.state.user = ctx.user;
-      return true;
-    } catch {
-      if (path.startsWith('/api/')) {
-        ctx.res.writeHead(403, { 'Content-Type': 'application/json' });
-        ctx.res.end(JSON.stringify({ error: 'Invalid token' }));
-        return false;
-      }
-      return true;
+    if (path.startsWith('/api/')) {
+      ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+      ctx.res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return false;
     }
+    return true;
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7b) SESSION MIDDLEWARE (cookie-based)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function sessionMiddleware(options = {}) {
+  const {
+    cookieName = 'elmoorx_session',
+    maxAge = 86400 * 7, // 7 days
+    httpOnly = true,
+    secure = false,
+    sameSite = 'lax',
+  } = options;
+
+  const sessions = new Map();
+
+  // Cleanup expired sessions
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (session.expires < now) sessions.delete(id);
+    }
+  }, 3600000);
+
+  return async (ctx) => {
+    const cookies = parseCookies(ctx.req.headers.cookie || '');
+
+    let sessionId = cookies[cookieName];
+    let session = null;
+
+    if (sessionId && sessions.has(sessionId)) {
+      session = sessions.get(sessionId);
+      if (session.expires < Date.now()) {
+        sessions.delete(sessionId);
+        session = null;
+        sessionId = null;
+      }
+    }
+
+    if (!session) {
+      sessionId = generateSessionId();
+      session = {
+        id: sessionId,
+        data: {},
+        expires: Date.now() + maxAge * 1000,
+        get: (key) => session.data[key],
+        set: (key, value) => { session.data[key] = value; },
+        destroy: () => { sessions.delete(sessionId); session.data = {}; },
+      };
+      sessions.set(sessionId, session);
+
+      // Set cookie
+      ctx.res.setHeader('Set-Cookie', `${cookieName}=${sessionId}; Path=/; Max-Age=${maxAge}; HttpOnly=${httpOnly}; SameSite=${sameSite}${secure ? '; Secure' : ''}`);
+    }
+
+    ctx.session = session;
+    return true;
+  };
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  for (const pair of cookieHeader.split(';')) {
+    const [key, value] = pair.trim().split('=');
+    if (key) cookies[key] = value || '';
+  }
+  return cookies;
+}
+
+function generateSessionId() {
+  const { randomBytes } = require('node:crypto');
+  return randomBytes(32).toString('hex');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -496,6 +620,88 @@ function getCacheControl(ext) {
   return 'public, max-age=3600';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 9b) FILE UPLOAD HANDLER
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleFileUpload(raw, contentType, uploadDir, maxSize) {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { join, extname } = await import('node:path');
+
+  if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+
+  if (raw.length > maxSize) {
+    throw new Error(`File too large (max ${Math.round(maxSize / 1024 / 1024)}MB)`);
+  }
+
+  const boundary = contentType.split('boundary=')[1];
+  if (!boundary) return { error: 'Invalid multipart data' };
+
+  const parts = raw.toString('binary').split('--' + boundary);
+  const result = { fields: {}, files: [] };
+
+  for (const part of parts) {
+    if (!part.trim() || part === '--') continue;
+
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+
+    const headers = part.slice(0, headerEnd);
+    const content = part.slice(headerEnd + 4, part.length - 2);
+
+    // Parse content-disposition
+    const nameMatch = headers.match(/name="([^"]+)"/);
+    const filenameMatch = headers.match(/filename="([^"]*)"/);
+
+    if (filenameMatch) {
+      // File
+      const fieldName = nameMatch?.[1] || 'file';
+      const filename = filenameMatch[1];
+      const ext = extname(filename).toLowerCase();
+      const safeName = `${Date.now()}_${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const filePath = join(uploadDir, safeName);
+
+      writeFileSync(filePath, Buffer.from(content, 'binary'));
+
+      result.files.push({
+        field: fieldName,
+        filename,
+        savedAs: safeName,
+        path: filePath,
+        size: content.length,
+        ext,
+        type: getMimeType(ext),
+      });
+    } else if (nameMatch) {
+      // Text field
+      result.fields[nameMatch[1]] = content.trim();
+    }
+  }
+
+  return result;
+}
+
+function parseUrlEncoded(str) {
+  const params = {};
+  for (const pair of str.split('&')) {
+    const [k, v] = pair.split('=').map(decodeURIComponent);
+    if (k) params[k] = v ?? '';
+  }
+  return params;
+}
+
+function getMimeType(ext) {
+  const types = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+    '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+    '.pdf': 'application/pdf', '.txt': 'text/plain', '.csv': 'text/csv',
+    '.json': 'application/json', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4',
+    '.zip': 'application/zip', '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+  return types[ext] || 'application/octet-stream';
+}
+
 async function loadModuleDynamic(code) {
   const tmpFile = join(os.tmpdir(), 'elmoorx_ssr_' + Date.now() + '.mjs');
   writeFileSync(tmpFile, code);
@@ -503,4 +709,4 @@ async function loadModuleDynamic(code) {
   finally { try { unlinkSync(tmpFile); } catch {} }
 }
 
-export default { startSSRServer, signJWT, verifyJWT, corsMiddleware, rateLimitMiddleware, authMiddleware };
+export default { startSSRServer, signJWT, verifyJWT, corsMiddleware, rateLimitMiddleware, authMiddleware, sessionMiddleware };
