@@ -1,0 +1,323 @@
+# Elmoorx v4 — Kubernetes Manifests
+# =================================
+# يحتوي على: Namespace, Deployment, Service, Ingress, HPA, ConfigMap, Secret, PDB
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Namespace
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: elmoorx
+  labels:
+    name: elmoorx
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ConfigMap (non-sensitive config)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elmoorx-config
+  namespace: elmoorx
+data:
+  NODE_ENV: "production"
+  HOST: "0.0.0.0"
+  PORT: "3000"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  REDIS_URL: "redis://redis:6379"
+  RATE_LIMIT_STORE: "redis"
+  SESSION_STORE: "redis"
+  RATE_LIMIT_MAX: "1000"
+  RATE_LIMIT_WINDOW_MS: "60000"
+  SESSION_MAX_AGE: "604800"
+  TRACING_EXPORTER: "otlp"
+  TRACING_ENDPOINT: "http://otel-collector:4318"
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Secret (sensitive config)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: elmoorx-secret
+  namespace: elmoorx
+type: Opaque
+stringData:
+  JWT_SECRET: "REPLACE_WITH_YOUR_JWT_SECRET"
+  DATABASE_URL: "REPLACE_WITH_YOUR_DATABASE_URL"
+  REDIS_PASSWORD: ""
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment (3 replicas)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elmoorx-app
+  namespace: elmoorx
+  labels:
+    app: elmoorx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elmoorx
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: elmoorx
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: elmoorx
+          image: elmoorx-v4:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: elmoorx-config
+            - secretRef:
+                name: elmoorx-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -SIGTERM 1"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 60
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Service (ClusterIP)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: elmoorx-service
+  namespace: elmoorx
+  labels:
+    app: elmoorx
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: elmoorx
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# HorizontalPodAutoscaler (auto-scale 3-10 replicas)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: elmoorx-hpa
+  namespace: elmoorx
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: elmoorx-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PodDisruptionBudget (ضمان توفر أثناء التحديثات)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: elmoorx-pdb
+  namespace: elmoorx
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: elmoorx
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress (NGINX Ingress Controller)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: elmoorx-ingress
+  namespace: elmoorx
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload";
+spec:
+  tls:
+    - hosts:
+        - api.elmoorx.example.com
+      secretName: elmoorx-tls
+  rules:
+    - host: api.elmoorx.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: elmoorx-service
+                port:
+                  number: 80
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Redis Deployment (sessions + rate limit)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: elmoorx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: elmoorx
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+  selector:
+    app: redis
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: elmoorx
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

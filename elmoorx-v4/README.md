@@ -5,7 +5,7 @@
 
 [![Version](https://img.shields.io/badge/version-4.0.0-blue)]()
 [![Dependencies](https://img.shields.io/badge/dependencies-0-success)]()
-[![Tests](https://img.shields.io/badge/tests-584%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-607%20passing-brightgreen)]()
 [![Packages](https://img.shields.io/badge/packages-37-blue)]()
 [![Components](https://img.shields.io/badge/UI%20components-111%2B-purple)]()
 [![CLI](https://img.shields.io/badge/CLI%20commands-46-orange)]()
@@ -160,6 +160,181 @@ node examples/production-app.mjs
 #   - Compression + Security headers
 #   - Graceful shutdown
 ```
+
+## 🐳 النشر بالإنتاج (Docker + Kubernetes)
+
+### Docker (سريع)
+
+```bash
+# توليد Dockerfile + docker-compose.yml
+./elmoorx dockerize --port=3000 --replicas=3 --redis=true --kubernetes=true
+
+# البناء + التشغيل
+docker build -t elmoorx-app .
+docker run -p 3000:3000 elmoorx-app
+
+# مع كل الـ stack (Redis + Prometheus + Grafana)
+docker-compose up -d
+```
+
+**المميزات:**
+- Multi-stage build (صورة نهائية صغيرة)
+- non-root user للأمان
+- tini لـ proper signal handling (graceful shutdown)
+- Health check مدمج
+- دعم amd64 + arm64
+
+### Kubernetes (إنتاجي)
+
+```bash
+# توليد manifests
+./elmoorx dockerize --kubernetes=true
+
+# النشر
+kubectl apply -f deploy/kubernetes/manifests.yaml
+
+# التحقق
+kubectl get pods -n elmoorx
+kubectl get svc -n elmoorx
+```
+
+**يتضمن:**
+- Deployment مع 3 replicas
+- Service (ClusterIP)
+- HorizontalPodAutoscaler (3-10 replicas تلقائياً)
+- PodDisruptionBudget (ضمان توفر)
+- ConfigMap + Secret
+- Redis Deployment + PVC
+- Ingress مع SSL + rate limiting
+
+### CI/CD (GitHub Actions)
+
+يحتوي الـ repo على `.github/workflows/ci-cd.yml` بـ pipeline كامل:
+
+1. **Test** — يشغّل 607 اختبار
+2. **Security Scan** — فحص secrets + vulnerabilities
+3. **Build Docker** — بناء صورة multi-arch (amd64 + arm64)
+4. **Deploy Staging** — نشر تلقائي على `develop` branch
+5. **Deploy Production** — نشر على tags `v*`
+6. **Release** — إنشاء GitHub Release مع changelog تلقائي
+
+## 🔍 التتبّع الموزّع (Tracing)
+
+```javascript
+import { initTracing, tracingMiddleware, startSpan, endSpan } from './ssr-server/tracing.mjs';
+
+// ابدأ tracer
+initTracing({
+  serviceName: 'my-api',
+  exporter: 'otlp',           // 'console' | 'file' | 'otlp'
+  exporterOptions: {
+    endpoint: 'http://otel-collector:4318',
+  },
+  samplingRate: 1.0,
+});
+
+// أضفه للميدلوير
+await startSSRServer({
+  // ...
+});
+
+// يدوياً في الكود
+const span = startSpan('db-query', { table: 'users' });
+// ... do work
+endSpan(span, { rows: 42 });
+```
+
+**المميزات:**
+- W3C Trace Context (traceparent header)
+- Context propagation عبر services
+- Exporters: console, file (JSONL), OTLP/HTTP (Tempo, Jaeger, Honeycomb)
+- Sampling rate قابل للتخصيص
+- Integration مع requestId + logger
+- `tracedFetch()` للـ outgoing requests
+
+## ⚡ التخزين المؤقت (Cache)
+
+```javascript
+import { createCache, cacheMiddleware } from './ssr-server/cache.mjs';
+
+const cache = createCache({ max: 5000, ttl: 60000 });
+
+// استخدم يدوياً
+const user = await cache.getOrSet('user:123', async () => {
+  return await db.findUser(123);
+}, { ttl: 300000, tags: ['users'] });
+
+// أو كـ middleware
+await startSSRServer({
+  // ...
+  middlewares: [cacheMiddleware(cache, { ttl: 60000 })],
+});
+
+// إبطال بعلامة
+cache.invalidateTag('users');
+```
+
+**المميزات:**
+- LRU eviction (يحذف الأقل استخداماً)
+- TTL تلقائي
+- Tag-based invalidation
+- إحصائيات (hits, misses, hitRate)
+- async-safe
+
+## ⚙️ إدارة الإعدادات (Config)
+
+```bash
+# .env
+PORT=3000
+DATABASE_URL=postgres://user:pass@host:5432/db
+REDIS_URL=redis://localhost:6379
+LOG_LEVEL=info
+```
+
+```javascript
+import { loadEnv, getConfig, validateConfig } from './utils/config.mjs';
+
+// تلقائي عند الـ import، لكن يمكن استدعاؤها يدوياً
+loadEnv();
+
+// استخدم
+const port = getConfig('PORT', 3000, { type: 'number', min: 1, max: 65535 });
+const dbUrl = getConfig('DATABASE_URL', null, { required: true });
+
+// أو schema كاملة
+const config = validateConfig({
+  PORT: { type: 'number', default: 3000, min: 1, max: 65535 },
+  DATABASE_URL: { required: true },
+  LOG_LEVEL: { type: 'string', choices: ['debug', 'info', 'warn', 'error'], default: 'info' },
+  CORS_ORIGINS: { type: 'array', default: [] },
+});
+```
+
+**المميزات:**
+- POSIX-compatible parser
+- دعم quotes (single, double)
+- Variable interpolation (`$VAR`, `${VAR}`, `${VAR:-default}`)
+- Multi-file: `.env`, `.env.local`, `.env.{NODE_ENV}`
+- Type validation (string, number, boolean, json, array)
+- Required, choices, min, max
+- Schema validation
+
+## 📊 اختبار الأداء (Load Testing)
+
+```bash
+# اختبر السيرفر
+node scripts/load-test.mjs --url=http://localhost:3000/ --concurrent=50 --duration=30
+
+# endpoints متعددة
+node scripts/load-test.mjs --endpoints=/,/health,/api/users,/blog/hello --concurrent=100 --duration=60
+
+# JSON output
+node scripts/load-test.mjs --url=http://localhost:3000/ --json
+```
+
+**النتائج المرجعية (على بيئة تطوير):**
+- `/health` endpoint: **7,700 req/s** (100% success, p50=1.3ms, p99=25ms)
+- SSR مع compression: **870 req/s** (100% success, p50=58ms, p99=123ms)
 
 ## 📦 البناء
 

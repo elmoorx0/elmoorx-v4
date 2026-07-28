@@ -1,0 +1,25 @@
+# Elmoorx v4 — Prometheus Config
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'elmoorx'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['app:3000']
+        labels:
+          service: 'elmoorx-app'
+          env: 'production'
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
