@@ -1,0 +1,838 @@
+     1→/**
+     2→ * Elmoorx v4 — SSR Server (Production-Ready)
+     3→ * =============================================
+     4→ * خادم SSR كامل مع:
+     5→ *   - Server-side routing
+     6→ *   - SSR rendering + hydration
+     7→ *   - Data loaders (getServerSideProps)
+     8→ *   - Auth middleware (JWT)
+     9→ *   - Rate limiting
+    10→ *   - Streaming SSR
+    11→ *   - Error boundaries (SSR)
+    12→ *   - Static generation (SSG)
+    13→ */
+    14→
+    15→import { createServer as createHttpServer } from 'node:http';
+    16→import { existsSync, readFileSync, statSync, readdirSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+    17→import { join, extname, resolve, dirname } from 'node:path';
+    18→import { fileURLToPath } from 'node:url';
+    19→import { createHmac } from 'node:crypto';
+    20→import { createRequire } from 'node:module';
+    21→import { compile, liveCompile, clearCompileCache } from '../compiler/index.mjs';
+    22→import { renderToString, h, getSSRData } from '../runtime/core.mjs';
+    23→
+    24→const require = createRequire(import.meta.url);
+    25→const __dirname = dirname(fileURLToPath(import.meta.url));
+    26→const os = require('node:os');
+    27→
+    28→const MIME = {
+    29→  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
+    30→  '.js': 'application/javascript', '.mjs': 'application/javascript',
+    31→  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
+    32→  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+    33→  '.woff': 'font/woff', '.woff2': 'font/woff2', '.wasm': 'application/wasm',
+    34→};
+    35→
+    36→// ─────────────────────────────────────────────────────────────────────────────
+    37→// 1) START SSR SERVER
+    38→// ─────────────────────────────────────────────────────────────────────────────
+    39→
+    40→export async function startSSRServer(options = {}) {
+    41→  const {
+    42→    root = process.cwd(), port = 3000, apiDir = null,
+    43→    publicDir = 'public', staticDir = 'dist',
+    44→    ssr = true, cors = true, rateLimit = true,
+    45→    auth = null, onRender = null,
+    46→    websocket = false, sessions = false,
+    47→    uploadDir = null, maxUploadSize = 10 * 1024 * 1024,
+    48→  } = options;
+    49→
+    50→  const rootDir = resolve(root);
+    51→  const distPath = existsSync(join(rootDir, staticDir)) ? join(rootDir, staticDir) : rootDir;
+    52→  const publicPath = join(rootDir, publicDir);
+    53→  const frameworkDir = existsSync(join(rootDir, '.elmoorx')) ? join(rootDir, '.elmoorx') : resolve(__dirname, '..');
+    54→
+    55→  // Build middleware chain
+    56→  const middlewares = [];
+    57→  if (cors) middlewares.push(corsMiddleware());
+    58→  if (rateLimit) middlewares.push(rateLimitMiddleware());
+    59→  if (sessions) middlewares.push(sessionMiddleware());
+    60→  if (auth) middlewares.push(authMiddleware(auth));
+    61→
+    62→  // Load routes
+    63→  const routes = await loadRoutes(rootDir);
+    64→
+    65→  console.log(`\n  ✦ Elmoorx v4 — SSR Production Server`);
+    66→  console.log(`  ─────────────────────────────────────`);
+    67→  console.log(`  │ المنفذ:      ${port}`);
+    68→  console.log(`  │ SSR:         ${ssr ? '✓' : '✗'}`);
+    69→  console.log(`  │ Routes:      ${routes.length}`);
+    70→  console.log(`  │ API:         ${apiDir ? '✓' : '✗'}`);
+    71→  console.log(`  │ CORS:        ${cors ? '✓' : '✗'}`);
+    72→  console.log(`  │ Rate limit:  ${rateLimit ? '✓' : '✗'}`);
+    73→  console.log(`  │ Auth (JWT):  ${auth ? '✓' : '✗'}`);
+    74→  console.log(`  │ WebSocket:   ${websocket ? '✓' : '✗'}`);
+    75→  console.log(`  │ Sessions:    ${sessions ? '✓' : '✗'}`);
+    76→  console.log(`  │ File upload: ${uploadDir ? '✓' : '✗'}`);
+    77→
+    78→  const server = createHttpServer(async (req, res) => {
+    79→    const ctx = { req, res, url: new URL(req.url, `http://${req.headers.host}`), state: {}, session: null };
+    80→
+    81→    // Run middleware chain
+    82→    for (const mw of middlewares) {
+    83→      const result = await mw(ctx);
+    84→      if (result === false) return;
+    85→    }
+    86→
+    87→    try {
+    88→      await handleSSRRequest(req, res, { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx, uploadDir, maxUploadSize });
+    89→    } catch (err) {
+    90→      handleServerError(res, err);
+    91→    }
+    92→  });
+    93→
+    94→  // WebSocket support
+    95→  if (websocket) {
+    96→    try {
+    97→      const { WebSocketServer } = await import('../vendor/ws-shim.mjs');
+    98→      const wss = new WebSocketServer({ server, path: '/__ws__' });
+    99→      const wsClients = new Set();
+   100→      wss.on('connection', (ws, req) => {
+   101→        wsClients.add(ws);
+   102→        ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
+   103→        ws.on('message', (data) => {
+   104→          try {
+   105→            const msg = JSON.parse(data.toString());
+   106→            // Broadcast to all clients
+   107→            const broadcast = JSON.stringify({ type: 'message', data: msg, timestamp: Date.now() });
+   108→            for (const client of wsClients) {
+   109→              try { client.send(broadcast); } catch {}
+   110→            }
+   111→          } catch {}
+   112→        });
+   113→        ws.on('close', () => wsClients.delete(ws));
+   114→      });
+   115→      console.log(`  │ WS clients:  ready`);
+   116→    } catch (err) {
+   117→      console.log(`  │ WS:          ⚠ ${err.message}`);
+   118→    }
+   119→  }
+   120→
+   121→  server.listen(port, () => {
+   122→    console.log(`  │ الحالة:      جاهز ✓`);
+   123→    console.log(`  ─────────────────────────────────────\n  → http://localhost:${port}\n`);
+   124→  });
+   125→
+   126→  return server;
+   127→}
+   128→
+   129→// ─────────────────────────────────────────────────────────────────────────────
+   130→// 2) REQUEST HANDLER
+   131→// ─────────────────────────────────────────────────────────────────────────────
+   132→
+   133→async function handleSSRRequest(req, res, config) {
+   134→  const { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx } = config;
+   135→  const url = new URL(req.url, `http://${req.headers.host}`);
+   136→  const path = decodeURIComponent(url.pathname);
+   137→
+   138→  // 1) API routes
+   139→  if (apiDir && path.startsWith('/api/')) {
+   140→    await handleAPIRoute(req, res, path, apiDir, ctx);
+   141→    return;
+   142→  }
+   143→
+   144→  // 2) Static files
+   145→  if (await serveStatic(req, res, path, publicPath)) return;
+   146→  if (await serveStatic(req, res, path, distPath)) return;
+   147→  if (await serveFrameworkModule(req, res, path, frameworkDir)) return;
+   148→
+   149→  // 3) SSR rendering
+   150→  if (ssr) {
+   151→    await renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRender, ctx);
+   152→    return;
+   153→  }
+   154→
+   155→  // 4) SPA fallback
+   156→  const indexPath = join(distPath, 'index.html');
+   157→  if (existsSync(indexPath)) {
+   158→    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+   159→    res.end(readFileSync(indexPath, 'utf8'));
+   160→    return;
+   161→  }
+   162→
+   163→  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+   164→  res.end('404 — Not Found');
+   165→}
+   166→
+   167→// ─────────────────────────────────────────────────────────────────────────────
+   168→// 3) SSR PAGE RENDERER
+   169→// ─────────────────────────────────────────────────────────────────────────────
+   170→
+   171→async function renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRender, ctx) {
+   172→  const match = matchRoute(path, routes);
+   173→
+   174→  if (!match) {
+   175→    const html = await buildHTML({ title: '404 — غير موجود', appHtml: '<div style="padding:4rem;text-align:center;"><h1>404</h1><p>الصفحة غير موجودة</p></div>', data: {}, frameworkDir, status: 404 });
+   176→    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+   177→    res.end(html);
+   178→    return;
+   179→  }
+   180→
+   181→  // Run data loader
+   182→  let data = {};
+   183→  if (match.route.loader) {
+   184→    try {
+   185→      data = await match.route.loader({
+   186→        params: match.params,
+   187→        query: Object.fromEntries(new URL(req.url, 'http://localhost').searchParams),
+   188→        req, ctx,
+   189→      }) || {};
+   190→    } catch (err) {
+   191→      console.error('[SSR] Loader error:', err.message);
+   192→      const html = await buildHTML({ title: '500 — خطأ', appHtml: `<div style="padding:2rem;color:red;">خطأ: ${err.message}</div>`, data: {}, frameworkDir, status: 500 });
+   193→      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+   194→      res.end(html);
+   195→      return;
+   196→    }
+   197→  }
+   198→
+   199→  // Render component with SSR context (islands + state)
+   200→  let appHtml = '';
+   201→  let ssrData = null;
+   202→  if (match.route.component) {
+   203→    try {
+   204→      appHtml = renderToString(match.route.component({ data, params: match.params }));
+   205→      ssrData = getSSRData();
+   206→    } catch (err) {
+   207→      appHtml = `<div style="padding:2rem;color:red;">Render Error: ${err.message}</div>`;
+   208→    }
+   209→  } else {
+   210→    // Try loading entry point
+   211→    try {
+   212→      const entryPath = join(rootDir, 'src', 'index.tsx');
+   213→      if (existsSync(entryPath)) {
+   214→        const compiled = liveCompile(entryPath);
+   215→        const mod = await loadModuleDynamic(compiled);
+   216→        if (mod.default) {
+   217→          appHtml = renderToString(mod.default({ data, params: match.params }));
+   218→          ssrData = getSSRData();
+   219→        }
+   220→      }
+   221→    } catch (err) {
+   222→      appHtml = `<div style="padding:2rem;color:#94a3b8;">جاري التحميل...</div>`;
+   223→    }
+   224→  }
+   225→
+   226→  // Streaming SSR: send head first, then body, then scripts
+   227→  res.writeHead(200, {
+   228→    'Content-Type': 'text/html; charset=utf-8',
+   229→    'Transfer-Encoding': 'chunked',
+   230→    'X-Content-Type-Options': 'nosniff',
+   231→    'X-Frame-Options': 'DENY',
+   232→    'Referrer-Policy': 'strict-origin-when-cross-origin',
+   233→    'Cache-Control': 'no-cache, no-store, must-revalidate',
+   234→  });
+   235→
+   236→  // Stream: head + opening
+   237→  const runtimePath = existsSync(join(frameworkDir, 'runtime', 'core.mjs')) ? '/runtime/core.mjs' : '/.elmoorx/runtime/core.mjs';
+   238→  const head = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>${match.route.title || 'Elmoorx App'}</title><link rel="manifest" href="/manifest.json"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui}#app{min-height:100vh}</style></head><body><div id="app">`;
+   239→  res.write(head);
+   240→
+   241→  // Stream: app HTML (the actual rendered content)
+   242→  res.write(appHtml);
+   243→
+   244→  // Stream: closing + state + hydration
+   245→  const islandData = ssrData ? JSON.stringify({ islands: ssrData.islands, data, params: match.params, path }).replace(/</g, '\\u003c') : JSON.stringify({ data, params: match.params, path }).replace(/</g, '\\u003c');
+   246→  const tail = `</div><script>window.__ELMOORX_SSR_DATA__=${islandData};</script><script type="module">import{hydrateIslands}from'${runtimePath}';hydrateIslands();</script><script>window.addEventListener('error',function(e){var o=document.createElement('div');o.style.cssText='position:fixed;inset:0;background:rgba(239,68,68,0.95);color:white;padding:2rem;z-index:99999;overflow:auto;font-family:monospace;direction:ltr;';o.innerHTML='<h2>Runtime Error</h2><pre>'+e.message+'\\n\\n'+(e.error&&e.error.stack||'')+'</pre><button onclick="this.parentElement.remove()" style="margin-top:1rem;padding:0.5rem 1rem;background:white;color:#ef4444;border:none;border-radius:4px;cursor:pointer;">Close</button>';document.body.appendChild(o);});</script></body></html>`;
+   247→  res.end(tail);
+   248→}
+   249→
+   250→async function buildHTML({ title, appHtml, data, params, frameworkDir, path, status }) {
+   251→  const runtimePath = existsSync(join(frameworkDir, 'runtime', 'core.mjs')) ? '/runtime/core.mjs' : '/.elmoorx/runtime/core.mjs';
+   252→  const stateScript = `<script>window.__ELMOORX_SSR_DATA__ = ${JSON.stringify({ data, params, path }).replace(/</g, '\\u003c')};</script>`;
+   253→
+   254→  return `<!DOCTYPE html>
+   255→<html lang="ar" dir="rtl">
+   256→<head>
+   257→  <meta charset="UTF-8">
+   258→  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   259→  <title>${title}</title>
+   260→  <link rel="manifest" href="/manifest.json">
+   261→  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui}#app{min-height:100vh}</style>
+   262→</head>
+   263→<body>
+   264→  <div id="app">${appHtml}</div>
+   265→  ${stateScript}
+   266→  <script type="module">
+   267→    import { hydrateIslands } from '${runtimePath}';
+   268→    // Hydrate: attach events to SSR-rendered DOM
+   269→    hydrateIslands();
+   270→  </script>
+   271→  <script>
+   272→    window.addEventListener('error', function(e) {
+   273→      var o = document.createElement('div');
+   274→      o.style.cssText = 'position:fixed;inset:0;background:rgba(239,68,68,0.95);color:white;padding:2rem;z-index:99999;overflow:auto;font-family:monospace;direction:ltr;';
+   275→      o.innerHTML = '<h2>Runtime Error</h2><pre>' + e.message + '\\n\\n' + (e.error && e.error.stack || '') + '</pre><button onclick="this.parentElement.remove()" style="margin-top:1rem;padding:0.5rem 1rem;background:white;color:#ef4444;border:none;border-radius:4px;cursor:pointer;">Close</button>';
+   276→      document.body.appendChild(o);
+   277→    });
+   278→  </script>
+   279→</body>
+   280→</html>`;
+   281→}
+   282→
+   283→// ─────────────────────────────────────────────────────────────────────────────
+   284→// 4) ROUTE MATCHER
+   285→// ─────────────────────────────────────────────────────────────────────────────
+   286→
+   287→function matchRoute(path, routes) {
+   288→  for (const route of routes) {
+   289→    const regex = pathToRegex(route.path);
+   290→    const match = regex.exec(path);
+   291→    if (match) return { route, params: match.groups || {} };
+   292→  }
+   293→  return null;
+   294→}
+   295→
+   296→function pathToRegex(path) {
+   297→  if (path === '*') return /^.*$/;
+   298→  const pattern = path
+   299→    .replace(/\*([a-z0-9_]+)/gi, '(?<$1>.*)')
+   300→    .replace(/:([a-z0-9_]+)/gi, '(?<$1>[^/]+)');
+   301→  return new RegExp('^' + pattern + '$', 'i');
+   302→}
+   303→
+   304→async function loadRoutes(rootDir) {
+   305→  const routes = [];
+   306→  const pagesDir = join(rootDir, 'src', 'pages');
+   307→  if (existsSync(pagesDir)) scanPages(pagesDir, '', routes);
+   308→  if (routes.length === 0) routes.push({ path: '/', component: null, title: 'Elmoorx App' });
+   309→  return routes;
+   310→}
+   311→
+   312→function scanPages(dir, basePath, routes) {
+   313→  try {
+   314→    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+   315→      const fullPath = join(dir, entry.name);
+   316→      if (entry.isDirectory()) {
+   317→        scanPages(fullPath, basePath + '/' + entry.name, routes);
+   318→      } else {
+   319→        const ext = extname(entry.name).toLowerCase();
+   320→        if (['.tsx', '.ts', '.jsx', '.js', '.mjs'].includes(ext)) {
+   321→          let routePath = (basePath + '/' + entry.name.replace(ext, '')).replace(/\/index$/, '') || '/';
+   322→          if (!routePath.startsWith('/')) routePath = '/' + routePath;
+   323→          routePath = routePath.replace(/\[([^\]]+)\]/g, ':$1').replace(/\[\.\.\.([^\]]+)\]/g, '*$1');
+   324→          routes.push({ path: routePath, file: fullPath, component: null, title: entry.name.replace(ext, ''), loader: null });
+   325→        }
+   326→      }
+   327→    }
+   328→  } catch {}
+   329→}
+   330→
+   331→// ─────────────────────────────────────────────────────────────────────────────
+   332→// 5) STATIC + FRAMEWORK
+   333→// ─────────────────────────────────────────────────────────────────────────────
+   334→
+   335→async function serveStatic(req, res, path, baseDir) {
+   336→  const filePath = join(baseDir, path.replace(/^\//, ''));
+   337→  if (!existsSync(filePath) || !statSync(filePath).isFile()) return false;
+   338→  const ext = extname(filePath).toLowerCase();
+   339→  const acceptEncoding = req.headers['accept-encoding'] || '';
+   340→
+   341→  if (acceptEncoding.includes('br') && existsSync(filePath + '.br')) {
+   342→    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Content-Encoding': 'br', 'Cache-Control': getCacheControl(ext) });
+   343→    res.end(readFileSync(filePath + '.br'));
+   344→    return true;
+   345→  }
+   346→  if (acceptEncoding.includes('gzip') && existsSync(filePath + '.gz')) {
+   347→    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Content-Encoding': 'gzip', 'Cache-Control': getCacheControl(ext) });
+   348→    res.end(readFileSync(filePath + '.gz'));
+   349→    return true;
+   350→  }
+   351→
+   352→  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': getCacheControl(ext), 'Content-Length': statSync(filePath).size });
+   353→  if (statSync(filePath).size > 102400) {
+   354→    const { createReadStream } = await import('node:fs');
+   355→    createReadStream(filePath).pipe(res);
+   356→  } else {
+   357→    res.end(readFileSync(filePath));
+   358→  }
+   359→  return true;
+   360→}
+   361→
+   362→async function serveFrameworkModule(req, res, path, frameworkDir) {
+   363→  const moduleMatch = path.match(/^\/(?:\.elmoorx\/)?(runtime|router|ssr|i18n|http|testing|adapters|store|forms|animation|database|realtime|pwa|ui|graphql|charts|utils|markdown|minifier|treeshake|sourcemap|compress|e2e|imageopt|security|metrics|theme-gen|deps-graph|perf|splitting|code-editor|playground|snapshot|dataexport)\/?(.*)$/);
+   364→  if (moduleMatch) {
+   365→    const [, mod, rest] = moduleMatch;
+   366→    const file = join(frameworkDir, rest ? `${mod}/${rest}` : `${mod}/index.mjs`);
+   367→    if (existsSync(file)) {
+   368→      res.writeHead(200, { 'Content-Type': 'application/javascript' });
+   369→      res.end(readFileSync(file, 'utf8'));
+   370→      return true;
+   371→    }
+   372→  }
+   373→  return false;
+   374→}
+   375→
+   376→// ─────────────────────────────────────────────────────────────────────────────
+   377→// 6) API ROUTES
+   378→// ─────────────────────────────────────────────────────────────────────────────
+   379→
+   380→async function handleAPIRoute(req, res, path, apiDir, ctx) {
+   381→  const routePath = path.replace(/^\/api\//, '');
+   382→  const candidates = [join(apiDir, routePath + '.mjs'), join(apiDir, routePath + '.js'), join(apiDir, routePath, 'index.mjs'), join(apiDir, routePath, 'index.js')];
+   383→  let handlerFile = null;
+   384→  for (const c of candidates) { if (existsSync(c)) { handlerFile = c; break; } }
+   385→
+   386→  if (!handlerFile) {
+   387→    res.writeHead(404, { 'Content-Type': 'application/json' });
+   388→    res.end(JSON.stringify({ error: 'Not found' }));
+   389→    return;
+   390→  }
+   391→
+   392→  try {
+   393→    const handler = await import(fileURLToPath(new URL('file://' + handlerFile)));
+   394→    const fn = handler[req.method.toLowerCase()] || handler.default;
+   395→    if (typeof fn !== 'function') {
+   396→      res.writeHead(405, { 'Content-Type': 'application/json' });
+   397→      res.end(JSON.stringify({ error: `Method ${req.method} not allowed` }));
+   398→      return;
+   399→    }
+   400→
+   401→    let body = {};
+   402→    if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+   403→      const chunks = [];
+   404→      for await (const chunk of req) chunks.push(chunk);
+   405→      const raw = Buffer.concat(chunks);
+   406→      const contentType = req.headers['content-type'] || '';
+   407→
+   408→      if (contentType.includes('application/json')) {
+   409→        try { body = JSON.parse(raw.toString()); } catch {}
+   410→      } else if (contentType.includes('multipart/form-data') && config.uploadDir) {
+   411→        body = await handleFileUpload(raw, contentType, config.uploadDir, config.maxUploadSize);
+   412→      } else if (contentType.includes('application/x-www-form-urlencoded')) {
+   413→        body = parseUrlEncoded(raw.toString());
+   414→      } else {
+   415→        body = raw.toString();
+   416→      }
+   417→    }
+   418→
+   419→    const result = await fn({
+   420→      method: req.method, url: new URL(req.url, 'http://localhost'),
+   421→      body, headers: req.headers, ctx,
+   422→      query: Object.fromEntries(new URL(req.url, 'http://localhost').searchParams),
+   423→      user: ctx.user || null,
+   424→    });
+   425→
+   426→    res.writeHead(result.status || 200, { 'Content-Type': 'application/json', ...(result.headers || {}) });
+   427→    res.end(JSON.stringify(result.body || result));
+   428→  } catch (err) {
+   429→    res.writeHead(500, { 'Content-Type': 'application/json' });
+   430→    res.end(JSON.stringify({ error: err.message }));
+   431→  }
+   432→}
+   433→
+   434→// ─────────────────────────────────────────────────────────────────────────────
+   435→// 7) MIDDLEWARE
+   436→// ─────────────────────────────────────────────────────────────────────────────
+   437→
+   438→function corsMiddleware() {
+   439→  return async (ctx) => {
+   440→    ctx.res.setHeader('Access-Control-Allow-Origin', '*');
+   441→    ctx.res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+   442→    ctx.res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+   443→    if (ctx.req.method === 'OPTIONS') { ctx.res.writeHead(204); ctx.res.end(); return false; }
+   444→    return true;
+   445→  };
+   446→}
+   447→
+   448→function rateLimitMiddleware(options = {}) {
+   449→  const {
+   450→    windowMs = 60000, max = 100, message = 'تجاوزت حد الطلبات',
+   451→    store = 'memory', storePath = './data/ratelimit',
+   452→  } = options;
+   453→
+   454→  const clients = new Map();
+   455→  let fileStoreDir = null;
+   456→
+   457→  if (store === 'file') {
+   458→    fileStoreDir = resolve(storePath);
+   459→    if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
+   460→  }
+   461→
+   462→  // Cleanup
+   463→  setInterval(() => {
+   464→    const now = Date.now();
+   465→    for (const [ip, d] of clients) {
+   466→      if (now - d.startTime > windowMs) {
+   467→        clients.delete(ip);
+   468→        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json')); } catch {} }
+   469→      }
+   470→    }
+   471→  }, windowMs);
+   472→
+   473→  const persistClient = (ip, data) => {
+   474→    if (fileStoreDir) {
+   475→      try { writeFileSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json'), JSON.stringify(data)); } catch {}
+   476→    }
+   477→  };
+   478→
+   479→  const loadClient = (ip) => {
+   480→    if (!fileStoreDir) return null;
+   481→    const filePath = join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json');
+   482→    if (existsSync(filePath)) {
+   483→      try { return JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
+   484→    }
+   485→    return null;
+   486→  };
+   487→
+   488→  return async (ctx) => {
+   489→    const ip = ctx.req.headers['x-forwarded-for']?.split(',')[0]?.trim() || ctx.req.socket.remoteAddress || 'unknown';
+   490→    const now = Date.now();
+   491→
+   492→    let client = clients.get(ip);
+   493→    if (!client && fileStoreDir) {
+   494→      client = loadClient(ip);
+   495→      if (client) clients.set(ip, client);
+   496→    }
+   497→
+   498→    if (!client || now - client.startTime > windowMs) {
+   499→      client = { count: 1, startTime: now };
+   500→      clients.set(ip, client);
+   501→      persistClient(ip, client);
+   502→      return true;
+   503→    }
+   504→
+   505→    client.count++;
+   506→    persistClient(ip, client);
+   507→
+   508→    if (client.count > max) {
+   509→      ctx.res.writeHead(429, {
+   510→        'Content-Type': 'application/json',
+   511→        'Retry-After': Math.ceil(windowMs / 1000),
+   512→        'X-RateLimit-Limit': String(max),
+   513→        'X-RateLimit-Remaining': '0',
+   514→        'X-RateLimit-Reset': String(Math.ceil((client.startTime + windowMs) / 1000)),
+   515→      });
+   516→      ctx.res.end(JSON.stringify({ error: message }));
+   517→      return false;
+   518→    }
+   519→
+   520→    // Set rate limit headers
+   521→    ctx.res.setHeader('X-RateLimit-Limit', String(max));
+   522→    ctx.res.setHeader('X-RateLimit-Remaining', String(Math.max(0, max - client.count)));
+   523→    ctx.res.setHeader('X-RateLimit-Reset', String(Math.ceil((client.startTime + windowMs) / 1000)));
+   524→
+   525→    return true;
+   526→  };
+   527→}
+   528→
+   529→function authMiddleware(options = {}) {
+   530→  const { secret, unless = [] } = options;
+   531→  return async (ctx) => {
+   532→    const path = ctx.url.pathname;
+   533→    if (unless.some(p => path.startsWith(p) || path === p)) return true;
+   534→    if (!path.startsWith('/api/') && !path.startsWith('/auth/')) return true;
+   535→
+   536→    // Try JWT from Authorization header
+   537→    const authHeader = ctx.req.headers['authorization'];
+   538→    if (authHeader?.startsWith('Bearer ')) {
+   539→      try {
+   540→        ctx.user = verifyJWT(authHeader.slice(7), secret);
+   541→        ctx.state.user = ctx.user;
+   542→        return true;
+   543→      } catch {
+   544→        if (path.startsWith('/api/')) {
+   545→          ctx.res.writeHead(403, { 'Content-Type': 'application/json' });
+   546→          ctx.res.end(JSON.stringify({ error: 'Invalid token' }));
+   547→          return false;
+   548→        }
+   549→      }
+   550→    }
+   551→
+   552→    // Try session from cookie
+   553→    if (ctx.session?.user) {
+   554→      ctx.user = ctx.session.user;
+   555→      ctx.state.user = ctx.user;
+   556→      return true;
+   557→    }
+   558→
+   559→    if (path.startsWith('/api/')) {
+   560→      ctx.res.writeHead(401, { 'Content-Type': 'application/json' });
+   561→      ctx.res.end(JSON.stringify({ error: 'Unauthorized' }));
+   562→      return false;
+   563→    }
+   564→    return true;
+   565→  };
+   566→}
+   567→
+   568→// ─────────────────────────────────────────────────────────────────────────────
+   569→// 7b) SESSION MIDDLEWARE (cookie-based)
+   570→// ─────────────────────────────────────────────────────────────────────────────
+   571→
+   572→function sessionMiddleware(options = {}) {
+   573→  const {
+   574→    cookieName = 'elmoorx_session',
+   575→    maxAge = 86400 * 7, // 7 days
+   576→    httpOnly = true,
+   577→    secure = false,
+   578→    sameSite = 'lax',
+   579→    store = 'memory', // 'memory' | 'file'
+   580→    storePath = './data/sessions',
+   581→  } = options;
+   582→
+   583→  const sessions = new Map();
+   584→  let fileStoreDir = null;
+   585→
+   586→  // Initialize file store if needed
+   587→  if (store === 'file') {
+   588→    fileStoreDir = resolve(storePath);
+   589→    if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
+   590→    // Load existing sessions on startup
+   591→    try {
+   592→      for (const file of readdirSync(fileStoreDir)) {
+   593→        if (file.endsWith('.json')) {
+   594→          const data = JSON.parse(readFileSync(join(fileStoreDir, file), 'utf8'));
+   595→          if (data.expires > Date.now()) {
+   596→            sessions.set(file.replace('.json', ''), data);
+   597→          } else {
+   598→            unlinkSync(join(fileStoreDir, file)); // cleanup expired
+   599→          }
+   600→        }
+   601→      }
+   602→    } catch {}
+   603→  }
+   604→
+   605→  // Cleanup expired sessions
+   606→  setInterval(() => {
+   607→    const now = Date.now();
+   608→    for (const [id, session] of sessions) {
+   609→      if (session.expires < now) {
+   610→        sessions.delete(id);
+   611→        if (fileStoreDir && existsSync(join(fileStoreDir, id + '.json'))) {
+   612→          try { unlinkSync(join(fileStoreDir, id + '.json')); } catch {}
+   613→        }
+   614→      }
+   615→    }
+   616→  }, 3600000);
+   617→
+   618→  const persistSession = (id, session) => {
+   619→    if (fileStoreDir) {
+   620→      try { writeFileSync(join(fileStoreDir, id + '.json'), JSON.stringify(session)); } catch {}
+   621→    }
+   622→  };
+   623→
+   624→  return async (ctx) => {
+   625→    const cookies = parseCookies(ctx.req.headers.cookie || '');
+   626→
+   627→    let sessionId = cookies[cookieName];
+   628→    let session = null;
+   629→
+   630→    if (sessionId && sessions.has(sessionId)) {
+   631→      session = sessions.get(sessionId);
+   632→      if (session.expires < Date.now()) {
+   633→        sessions.delete(sessionId);
+   634→        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
+   635→        session = null;
+   636→        sessionId = null;
+   637→      }
+   638→    }
+   639→
+   640→    // Try loading from file store if not in memory
+   641→    if (!session && fileStoreDir && sessionId) {
+   642→      const filePath = join(fileStoreDir, sessionId + '.json');
+   643→      if (existsSync(filePath)) {
+   644→        try {
+   645→          const data = JSON.parse(readFileSync(filePath, 'utf8'));
+   646→          if (data.expires > Date.now()) {
+   647→            session = data;
+   648→            sessions.set(sessionId, session);
+   649→          }
+   650→        } catch {}
+   651→      }
+   652→    }
+   653→
+   654→    if (!session) {
+   655→      sessionId = generateSessionId();
+   656→      session = {
+   657→        id: sessionId,
+   658→        data: {},
+   659→        expires: Date.now() + maxAge * 1000,
+   660→        get: (key) => session.data[key],
+   661→        set: (key, value) => { session.data[key] = value; persistSession(sessionId, session); },
+   662→        destroy: () => {
+   663→          sessions.delete(sessionId);
+   664→          if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
+   665→          session.data = {};
+   666→        },
+   667→      };
+   668→      sessions.set(sessionId, session);
+   669→      persistSession(sessionId, session);
+   670→
+   671→      // Set cookie
+   672→      ctx.res.setHeader('Set-Cookie', `${cookieName}=${sessionId}; Path=/; Max-Age=${maxAge}; HttpOnly=${httpOnly}; SameSite=${sameSite}${secure ? '; Secure' : ''}`);
+   673→    }
+   674→
+   675→    ctx.session = session;
+   676→    return true;
+   677→  };
+   678→}
+   679→
+   680→function parseCookies(cookieHeader) {
+   681→  const cookies = {};
+   682→  for (const pair of cookieHeader.split(';')) {
+   683→    const [key, value] = pair.trim().split('=');
+   684→    if (key) cookies[key] = value || '';
+   685→  }
+   686→  return cookies;
+   687→}
+   688→
+   689→function generateSessionId() {
+   690→  const { randomBytes } = require('node:crypto');
+   691→  return randomBytes(32).toString('hex');
+   692→}
+   693→
+   694→// ─────────────────────────────────────────────────────────────────────────────
+   695→// 8) JWT
+   696→// ─────────────────────────────────────────────────────────────────────────────
+   697→
+   698→export function signJWT(payload, secret, options = {}) {
+   699→  const { expiresIn = '1h' } = options;
+   700→  const header = { alg: 'HS256', typ: 'JWT' };
+   701→  const now = Math.floor(Date.now() / 1000);
+   702→  const body = { ...payload, iat: now, exp: now + parseExpiry(expiresIn) };
+   703→  const headerB64 = base64UrlEncode(JSON.stringify(header));
+   704→  const payloadB64 = base64UrlEncode(JSON.stringify(body));
+   705→  const sig = hmacSHA256(`${headerB64}.${payloadB64}`, secret);
+   706→  return `${headerB64}.${payloadB64}.${sig}`;
+   707→}
+   708→
+   709→export function verifyJWT(token, secret) {
+   710→  const parts = token.split('.');
+   711→  if (parts.length !== 3) throw new Error('Invalid token');
+   712→  const [headerB64, payloadB64, sig] = parts;
+   713→  if (hmacSHA256(`${headerB64}.${payloadB64}`, secret) !== sig) throw new Error('Invalid signature');
+   714→  const payload = JSON.parse(base64UrlDecode(payloadB64));
+   715→  if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) throw new Error('Token expired');
+   716→  return payload;
+   717→}
+   718→
+   719→function parseExpiry(s) {
+   720→  if (typeof s === 'number') return s;
+   721→  const m = s.match(/^(\d+)([smhd])$/);
+   722→  if (!m) return 3600;
+   723→  return parseInt(m[1]) * { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+   724→}
+   725→function base64UrlEncode(s) { return Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+   726→function base64UrlDecode(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Buffer.from(s, 'base64').toString('utf8'); }
+   727→function hmacSHA256(data, secret) { return createHmac('sha256', secret).update(data).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+   728→
+   729→// ─────────────────────────────────────────────────────────────────────────────
+   730→// 9) HELPERS
+   731→// ─────────────────────────────────────────────────────────────────────────────
+   732→
+   733→function handleServerError(res, err) {
+   734→  console.error('[Server] Error:', err.message);
+   735→  if (!res.headersSent) {
+   736→    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+   737→    res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>500</title></head><body style="font-family:system-ui;padding:2rem"><h1 style="color:#ef4444">500 — خطأ</h1><pre style="background:#f1f5f9;padding:1rem;border-radius:8px;margin-top:1rem">${err.message}</pre></body></html>`);
+   738→  }
+   739→}
+   740→
+   741→function getCacheControl(ext) {
+   742→  if (['.mjs', '.js', '.css', '.wasm'].includes(ext)) return 'public, max-age=31536000, immutable';
+   743→  if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.ico'].includes(ext)) return 'public, max-age=86400';
+   744→  if (ext === '.html') return 'no-cache, no-store, must-revalidate';
+   745→  return 'public, max-age=3600';
+   746→}
+   747→
+   748→// ─────────────────────────────────────────────────────────────────────────────
+   749→// 9b) FILE UPLOAD HANDLER
+   750→// ─────────────────────────────────────────────────────────────────────────────
+   751→
+   752→async function handleFileUpload(raw, contentType, uploadDir, maxSize) {
+   753→  const { mkdirSync, writeFileSync } = await import('node:fs');
+   754→  const { join, extname } = await import('node:path');
+   755→
+   756→  if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+   757→
+   758→  if (raw.length > maxSize) {
+   759→    throw new Error(`File too large (max ${Math.round(maxSize / 1024 / 1024)}MB)`);
+   760→  }
+   761→
+   762→  const boundary = contentType.split('boundary=')[1];
+   763→  if (!boundary) return { error: 'Invalid multipart data' };
+   764→
+   765→  const parts = raw.toString('binary').split('--' + boundary);
+   766→  const result = { fields: {}, files: [] };
+   767→
+   768→  for (const part of parts) {
+   769→    if (!part.trim() || part === '--') continue;
+   770→
+   771→    const headerEnd = part.indexOf('\r\n\r\n');
+   772→    if (headerEnd === -1) continue;
+   773→
+   774→    const headers = part.slice(0, headerEnd);
+   775→    const content = part.slice(headerEnd + 4, part.length - 2);
+   776→
+   777→    // Parse content-disposition
+   778→    const nameMatch = headers.match(/name="([^"]+)"/);
+   779→    const filenameMatch = headers.match(/filename="([^"]*)"/);
+   780→
+   781→    if (filenameMatch) {
+   782→      // File
+   783→      const fieldName = nameMatch?.[1] || 'file';
+   784→      const filename = filenameMatch[1];
+   785→      const ext = extname(filename).toLowerCase();
+   786→      const safeName = `${Date.now()}_${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+   787→      const filePath = join(uploadDir, safeName);
+   788→
+   789→      writeFileSync(filePath, Buffer.from(content, 'binary'));
+   790→
+   791→      result.files.push({
+   792→        field: fieldName,
+   793→        filename,
+   794→        savedAs: safeName,
+   795→        path: filePath,
+   796→        size: content.length,
+   797→        ext,
+   798→        type: getMimeType(ext),
+   799→      });
+   800→    } else if (nameMatch) {
+   801→      // Text field
+   802→      result.fields[nameMatch[1]] = content.trim();
+   803→    }
+   804→  }
+   805→
+   806→  return result;
+   807→}
+   808→
+   809→function parseUrlEncoded(str) {
+   810→  const params = {};
+   811→  for (const pair of str.split('&')) {
+   812→    const [k, v] = pair.split('=').map(decodeURIComponent);
+   813→    if (k) params[k] = v ?? '';
+   814→  }
+   815→  return params;
+   816→}
+   817→
+   818→function getMimeType(ext) {
+   819→  const types = {
+   820→    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+   821→    '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+   822→    '.pdf': 'application/pdf', '.txt': 'text/plain', '.csv': 'text/csv',
+   823→    '.json': 'application/json', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4',
+   824→    '.zip': 'application/zip', '.doc': 'application/msword',
+   825→    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+   826→  };
+   827→  return types[ext] || 'application/octet-stream';
+   828→}
+   829→
+   830→async function loadModuleDynamic(code) {
+   831→  const tmpFile = join(os.tmpdir(), 'elmoorx_ssr_' + Date.now() + '.mjs');
+   832→  writeFileSync(tmpFile, code);
+   833→  try { return await import(fileURLToPath(new URL('file://' + tmpFile))); }
+   834→  finally { try { unlinkSync(tmpFile); } catch {} }
+   835→}
+   836→
+   837→export default { startSSRServer, signJWT, verifyJWT, corsMiddleware, rateLimitMiddleware, authMiddleware, sessionMiddleware };
+   838→
