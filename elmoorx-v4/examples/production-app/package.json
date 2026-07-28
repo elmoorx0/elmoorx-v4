@@ -1,0 +1,9 @@
+{
+  "name": "production-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ../../elmoorx.mjs serve-prod --root=. --port=3000"
+  }
+}

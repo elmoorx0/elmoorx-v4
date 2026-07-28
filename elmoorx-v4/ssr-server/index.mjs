@@ -20,6 +20,15 @@ import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { compile, liveCompile, clearCompileCache } from '../compiler/index.mjs';
 import { renderToString, h, getSSRData, renderIsland } from '../runtime/core.mjs';
+import {
+  compressionMiddleware,
+  securityHeadersMiddleware,
+  requestIdMiddleware,
+  loggerMiddleware,
+  healthCheckMiddleware,
+  metricsMiddleware,
+  setupGracefulShutdown,
+} from './middleware.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +54,15 @@ export async function startSSRServer(options = {}) {
     auth = null, onRender = null,
     websocket = false, sessions = false,
     uploadDir = null, maxUploadSize = 10 * 1024 * 1024,
+    // Production middleware (افتراضياً مُفعّلة للإنتاج)
+    compression = true,
+    securityHeaders = true,
+    requestId = true,
+    logger = true,
+    healthCheck = true,
+    metrics = true,
+    gracefulShutdown = true,
+    http2 = false,
   } = options;
 
   const rootDir = resolve(root);
@@ -52,12 +70,35 @@ export async function startSSRServer(options = {}) {
   const publicPath = join(rootDir, publicDir);
   const frameworkDir = existsSync(join(rootDir, '.elmoorx')) ? join(rootDir, '.elmoorx') : resolve(__dirname, '..');
 
-  // Build middleware chain
+  // Build middleware chain (الترتيب مهم!)
+  // 1) requestId أولاً (يضع X-Request-ID لكل الـ logs التالية)
+  // 2) logger يلتقط الـ request ID ويسجّل
+  // 3) securityHeaders يحمي الـ responses
+  // 4) compression يضغط الـ responses
+  // 5) cors / rateLimit / sessions / auth
+  // 6) healthCheck و metrics (اعتراض مبكر لـ /health و /metrics)
   const middlewares = [];
+
+  let healthMW = null;
+  let metricsMW = null;
+
+  if (requestId) middlewares.push(requestIdMiddleware());
+  if (logger) middlewares.push(loggerMiddleware({ skipPaths: ['/health', '/metrics'] }));
+  if (healthCheck) {
+    healthMW = healthCheckMiddleware({ version: '4.0.0' });
+    middlewares.push(healthMW.middleware);
+  }
+  if (metrics) {
+    metricsMW = metricsMiddleware();
+    middlewares.push(metricsMW.middleware);
+  }
+  if (securityHeaders) middlewares.push(securityHeadersMiddleware());
   if (cors) middlewares.push(corsMiddleware());
   if (rateLimit) middlewares.push(rateLimitMiddleware());
   if (sessions) middlewares.push(sessionMiddleware());
   if (auth) middlewares.push(authMiddleware(auth));
+  // compression في النهاية (يلتقط كل الاستجابات بعد الميدلوير الأخرى)
+  if (compression) middlewares.push(compressionMiddleware());
 
   // Load routes
   const routes = await loadRoutes(rootDir);
@@ -68,12 +109,19 @@ export async function startSSRServer(options = {}) {
   console.log(`  │ SSR:         ${ssr ? '✓' : '✗'}`);
   console.log(`  │ Routes:      ${routes.length}`);
   console.log(`  │ API:         ${apiDir ? '✓' : '✗'}`);
+  console.log(`  │ Compression: ${compression ? '✓ (br, gzip)' : '✗'}`);
+  console.log(`  │ Security:    ${securityHeaders ? '✓ (CSP, HSTS, ...)' : '✗'}`);
+  console.log(`  │ Request ID:  ${requestId ? '✓' : '✗'}`);
+  console.log(`  │ Logger:      ${logger ? '✓ (JSON)' : '✗'}`);
+  console.log(`  │ Health:      ${healthCheck ? '✓ (/health)' : '✗'}`);
+  console.log(`  │ Metrics:     ${metrics ? '✓ (/metrics)' : '✗'}`);
   console.log(`  │ CORS:        ${cors ? '✓' : '✗'}`);
   console.log(`  │ Rate limit:  ${rateLimit ? '✓' : '✗'}`);
   console.log(`  │ Auth (JWT):  ${auth ? '✓' : '✗'}`);
   console.log(`  │ WebSocket:   ${websocket ? '✓' : '✗'}`);
   console.log(`  │ Sessions:    ${sessions ? '✓' : '✗'}`);
   console.log(`  │ File upload: ${uploadDir ? '✓' : '✗'}`);
+  console.log(`  │ Graceful:    ${gracefulShutdown ? '✓' : '✗'}`);
 
   const server = createHttpServer(async (req, res) => {
     const ctx = { req, res, url: new URL(req.url, `http://${req.headers.host}`), state: {}, session: null };
@@ -123,6 +171,19 @@ export async function startSSRServer(options = {}) {
     console.log(`  ─────────────────────────────────────\n  → http://localhost:${port}\n`);
   });
 
+  // Graceful shutdown
+  if (gracefulShutdown) {
+    setupGracefulShutdown(server, {
+      healthCheckMiddleware: healthMW,
+      onShutdown: async () => {
+        // أغلق أي resources إضافية هنا (DB, Redis, file watchers)
+        // الـ middleware لديها cleanup hooks خاصة بها
+      },
+    });
+    // ارفع ulimit لاستيعاب الطلبات المتزامنة
+    try { process.setMaxListeners(0); } catch {}
+  }
+
   return server;
 }
 
@@ -131,13 +192,13 @@ export async function startSSRServer(options = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleSSRRequest(req, res, config) {
-  const { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx } = config;
+  const { rootDir, distPath, publicPath, frameworkDir, apiDir, ssr, routes, onRender, ctx, uploadDir, maxUploadSize } = config;
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = decodeURIComponent(url.pathname);
 
   // 1) API routes
   if (apiDir && path.startsWith('/api/')) {
-    await handleAPIRoute(req, res, path, apiDir, ctx);
+    await handleAPIRoute(req, res, path, apiDir, ctx, { uploadDir, maxUploadSize });
     return;
   }
 
@@ -206,8 +267,24 @@ async function renderSSRPage(req, res, path, routes, rootDir, frameworkDir, onRe
     } catch (err) {
       appHtml = `<div style="padding:2rem;color:red;">Render Error: ${err.message}</div>`;
     }
+  } else if (match.route.file) {
+    // حمّل ملف الـ route المطابق وأعِد ترجمته
+    try {
+      const compiled = liveCompile(match.route.file);
+      const mod = await loadModuleDynamic(compiled);
+      if (mod.default) {
+        const vdom = typeof mod.default === 'function'
+          ? mod.default({ data, params: match.params })
+          : mod.default;
+        appHtml = renderToString(vdom);
+        ssrData = getSSRData();
+      }
+    } catch (err) {
+      console.error('[SSR] Route load error:', err.message);
+      appHtml = `<div style="padding:2rem;color:#f59e0b;">خطأ في تحميل الصفحة: ${err.message}</div>`;
+    }
   } else {
-    // Try loading entry point
+    // Fallback: حاول تحميل entry point
     try {
       const entryPath = join(rootDir, 'src', 'index.tsx');
       if (existsSync(entryPath)) {
@@ -377,7 +454,8 @@ async function serveFrameworkModule(req, res, path, frameworkDir) {
 // 6) API ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleAPIRoute(req, res, path, apiDir, ctx) {
+async function handleAPIRoute(req, res, path, apiDir, ctx, options = {}) {
+  const { uploadDir = null, maxUploadSize = 10 * 1024 * 1024 } = options;
   const routePath = path.replace(/^\/api\//, '');
   const candidates = [join(apiDir, routePath + '.mjs'), join(apiDir, routePath + '.js'), join(apiDir, routePath, 'index.mjs'), join(apiDir, routePath, 'index.js')];
   let handlerFile = null;
@@ -391,7 +469,8 @@ async function handleAPIRoute(req, res, path, apiDir, ctx) {
 
   try {
     const handler = await import(fileURLToPath(new URL('file://' + handlerFile)));
-    const fn = handler[req.method.toLowerCase()] || handler.default;
+    const methodLower = req.method.toLowerCase();
+    const fn = handler[methodLower] || handler[req.method] || handler.default;
     if (typeof fn !== 'function') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `Method ${req.method} not allowed` }));
@@ -407,8 +486,8 @@ async function handleAPIRoute(req, res, path, apiDir, ctx) {
 
       if (contentType.includes('application/json')) {
         try { body = JSON.parse(raw.toString()); } catch {}
-      } else if (contentType.includes('multipart/form-data') && config.uploadDir) {
-        body = await handleFileUpload(raw, contentType, config.uploadDir, config.maxUploadSize);
+      } else if (contentType.includes('multipart/form-data') && uploadDir) {
+        body = await handleFileUpload(raw, contentType, uploadDir, maxUploadSize);
       } else if (contentType.includes('application/x-www-form-urlencoded')) {
         body = parseUrlEncoded(raw.toString());
       } else {
