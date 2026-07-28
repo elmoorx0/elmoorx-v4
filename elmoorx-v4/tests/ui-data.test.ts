@@ -154,7 +154,9 @@ describe('UI Data — SearchInput', () => {
       suggestions: ['Apple'],
     }));
     // suggestions تظهر فقط عند focus + typing
-    expect(html).not.toContain('Apple');
+    // تجنّب فحص data-props لأنها قد تحتوي على القيم مُشفّرة (island wrapper)
+    const visibleHtml = html.replace(/data-props="[^"]*"/g, '');
+    expect(visibleHtml).not.toContain('Apple');
   });
 });
 

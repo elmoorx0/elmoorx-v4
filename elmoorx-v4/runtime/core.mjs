@@ -235,13 +235,16 @@ function _renderToString(node) {
     if (typeof node.tag === 'function') {
       const componentName = node.tag.name || 'Component';
       const props = { ...node.props, children: node.children };
-      const inner = _renderToString(node.tag(props));
+      const renderedVdom = node.tag(props);
+      const inner = _renderToString(renderedVdom);
 
-      // تحقق إذا كان المكون يحتوي على event handlers
-      const hasEvents = checkHasEvents(node.props);
+      // تحقق إذا كان المكون يحتوي على event handlers:
+      // 1) في props المُمرّرة للمكون نفسه (مثل <Button onClick=... />)
+      // 2) أو داخل الـ vdom الناتج من المكون (مثل العناصر الداخلية)
+      const hasEvents = checkHasEvents(node.props) || vdomHasEvents(renderedVdom);
 
       // إذا كان في سياق SSR والمكون تفاعلي، لفّه بـ island wrapper
-      if (ssrContext && hasEvents && !node.props.__noIsland) {
+      if (ssrContext && hasEvents && !(node.props && node.props.__noIsland)) {
         const islandId = `island_${ssrContext.islands.length}`;
         const islandProps = encodeURIComponent(JSON.stringify(
           Object.entries(node.props || {})
@@ -293,6 +296,29 @@ function checkHasEvents(props) {
   return Object.keys(props).some(k => k.startsWith('on') && typeof props[k] === 'function');
 }
 
+/**
+ * يمشي على vdom ويتحقق إذا كان أي عنصر يحتوي على event handlers
+ * يستخدم لاكتشاف المكونات التفاعلية من ناتجها المُرسَّم
+ */
+function vdomHasEvents(node) {
+  if (node === null || node === undefined || node === false || node === true) return false;
+  if (typeof node === 'string' || typeof node === 'number') return false;
+  if (typeof node === 'function') return false;
+  if (Array.isArray(node)) return node.some(vdomHasEvents);
+  if (typeof node === 'object' && node.tag) {
+    // تجنّب الحلقات اللانهائية مع المكونات
+    if (typeof node.tag === 'function') return false; // nested component — لا نتعمّق
+    if (node.tag === Fragment) {
+      return (node.children || []).some(vdomHasEvents);
+    }
+    // تحقق props هذا العنصر
+    if (checkHasEvents(node.props)) return true;
+    // تحقق children
+    return (node.children || []).some(vdomHasEvents);
+  }
+  return false;
+}
+
 // الحصول على بيانات SSR (islands + state)
 export function getSSRData() {
   if (!ssrContext) return null;
@@ -342,6 +368,8 @@ export function renderIsland(name, props = {}) {
 
 /**
  * hydrateIslands — يُشغّل فقط الجزر التفاعلية في الصفحة (client-side)
+ * استخدام hydrateIsland بدلاً من إعادة الرسم الكامل يحافظ على DOM الذي
+ * أنتجه SSR ويكتفي بربط event handlers والـ reactive effects.
  */
 export function hydrateIslands() {
   const islands = document.querySelectorAll('[data-elmoorx-island]');
@@ -354,8 +382,104 @@ export function hydrateIslands() {
       console.warn(`[elmoorx] Island "${name}" غير مُسجّلة`);
       continue;
     }
-    // mount + bind events only to this island
-    mountIsland(el, component, props);
+    // Hydrate in-place: walk existing SSR DOM and bind events without destroying it
+    hydrateIsland(el, component, props);
+  }
+}
+
+/**
+ * hydrateIsland — يربط الـ event handlers والـ reactive effects على DOM موجود
+ * بدلاً من إعادة إنشائه. هذا هو الـ hydration الحقيقي (zero-flicker).
+ *
+ * الخوارزمية:
+ *  1) يبني vdom من نفس المكون + props
+ *  2) يمشي على الـ vdom والـ DOM الحالي بالتوازي
+ *  3) يربط events على العناصر المطابقة فقط
+ *  4) لا يمسس text/attrs من SSR (تطابقت بالفعل)
+ */
+function hydrateIsland(rootEl, component, props) {
+  try {
+    const vdom = component(props);
+    // امشِ الـ vdom واربط الأحداث بالعناصر الموجودة
+    const childNodes = Array.isArray(vdom) ? vdom : [vdom];
+    const domChildren = Array.from(rootEl.childNodes);
+    let domIdx = 0;
+    for (const vnode of childNodes) {
+      const domNode = domChildren[domIdx];
+      if (domNode) {
+        bindVnodeToDom(vnode, domNode);
+        domIdx++;
+      }
+    }
+  } catch (err) {
+    // fallback إلى mount كامل إذا فشل الـ hydration
+    console.warn('[elmoorx] Hydration fallback to full mount:', err.message);
+    mountIsland(rootEl, component, props);
+  }
+}
+
+/**
+ * يربط vnode بـ DOM node موجود بالفعل — يضيف event listeners و reactive effects فقط
+ */
+function bindVnodeToDom(vnode, domNode) {
+  if (vnode === null || vnode === undefined || vnode === false || vnode === true) return;
+  if (typeof vnode === 'string' || typeof vnode === 'number') return; // text node — SSR مطابق
+  if (typeof vnode === 'function') {
+    // reactive text — اربط effect لتحديث النص
+    $effect(() => { domNode.nodeValue = String(vnode()); });
+    return;
+  }
+  if (Array.isArray(vnode)) {
+    let idx = 0;
+    for (const child of vnode) {
+      const dom = domNode.childNodes?.[idx];
+      if (dom) { bindVnodeToDom(child, dom); idx++; }
+    }
+    return;
+  }
+  if (typeof vnode === 'object' && vnode.tag) {
+    // Fragment — امشِ الأطفال
+    if (vnode.tag === Fragment) {
+      let idx = 0;
+      for (const child of vnode.children) {
+        const dom = domNode.childNodes?.[idx];
+        if (dom) { bindVnodeToDom(child, dom); idx++; }
+      }
+      return;
+    }
+    // Component function — حلّل واربط
+    if (typeof vnode.tag === 'function') {
+      const rendered = vnode.tag({ ...vnode.props, children: vnode.children });
+      return bindVnodeToDom(rendered, domNode);
+    }
+    // Regular element — اربط الـ event handlers فقط
+    if (domNode.nodeType === 1) { // ELEMENT_NODE
+      for (const [k, v] of Object.entries(vnode.props || {})) {
+        // event handler — أضف listener فقط (لا تعدّل DOM)
+        if (k.startsWith('on') && typeof v === 'function') {
+          domNode.addEventListener(k.slice(2).toLowerCase(), v);
+        }
+        // reactive attribute — اربط effect
+        else if (typeof v === 'function' && !k.startsWith('on')) {
+          $effect(() => {
+            const val = v();
+            if (val == null || val === false) domNode.removeAttribute(k);
+            else domNode.setAttribute(k, val);
+          });
+        }
+        // className might be reactive via signal — check
+        else if (k === 'className' && typeof v === 'function') {
+          $effect(() => { domNode.className = String(v()); });
+        }
+      }
+    }
+    // امشِ الأطفال بالتوازي
+    const childNodes = Array.isArray(vnode.children) ? vnode.children : [];
+    let idx = 0;
+    for (const child of childNodes) {
+      const dom = domNode.childNodes?.[idx];
+      if (dom) { bindVnodeToDom(child, dom); idx++; }
+    }
   }
 }
 

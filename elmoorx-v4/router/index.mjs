@@ -213,29 +213,94 @@ function DefaultNotFound() {
 // 6) LINK COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
 
+const prefetchCache = new Set();
+
+function prefetchByPath(to) {
+  if (typeof window === 'undefined') return;
+  if (prefetchCache.has(to)) return;
+  prefetchCache.add(to);
+
+  // 1) <link rel="prefetch"> للمستندات
+  try {
+    const link = document.createElement('link');
+    link.rel = 'prefetch';
+    link.href = to;
+    link.as = 'fetch';
+    link.crossOrigin = 'anonymous';
+    document.head.appendChild(link);
+  } catch {}
+
+  // 2) ابحث عن lazyRoute مطابق وحضّره
+  const match = routes.find(r => r.regex && r.regex.test(to.split('?')[0]));
+  if (match && match.lazy && match.loader) {
+    match.loader().catch(() => {});
+  }
+
+  // 3) إذا كان الـ route لديه module import خامل (lazy module)
+  if (match && match._lazyLoader) {
+    match._lazyLoader().catch(() => {});
+  }
+}
+
 export function Link(props) {
-  const { to, children, prefetch = true, ...rest } = props;
+  const {
+    to,
+    children,
+    prefetch = true,
+    prefetchOn = 'hover', // 'hover' | 'visible' | 'mount' | 'none'
+    ...rest
+  } = props;
   const prefetched = { current: false };
 
-  const handleMouseEnter = () => {
+  const doPrefetch = () => {
     if (!prefetch || prefetched.current) return;
     prefetched.current = true;
-    if (props.onMouseEnter) props.onMouseEnter();
+    prefetchByPath(to);
+  };
 
-    // إنشاء <link rel="prefetch"> تلقائياً
-    if (typeof document !== 'undefined') {
-      const link = document.createElement('link');
-      link.rel = 'prefetch';
-      link.href = to;
-      link.as = 'fetch';
-      link.crossOrigin = 'anonymous';
-      document.head.appendChild(link);
+  const handleMouseEnter = () => {
+    if (props.onMouseEnter) props.onMouseEnter();
+    if (prefetchOn === 'hover') doPrefetch();
+  };
+
+  const handleFocus = () => {
+    if (props.onFocus) props.onFocus();
+    if (prefetchOn === 'hover') doPrefetch();
+  };
+
+  // ref callback للـ intersection-observer-based prefetch
+  let linkRef = null;
+  const ref = (el) => {
+    linkRef = el;
+    if (el && prefetchOn === 'visible' && typeof window !== 'undefined') {
+      // IntersectionObserver — يُفعّل prefetch عند ظهور الرابط في الـ viewport
+      if ('IntersectionObserver' in window) {
+        const io = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              doPrefetch();
+              io.disconnect();
+              break;
+            }
+          }
+        }, { rootMargin: '200px' }); // ابدأ قبل 200px من ظهور الرابط
+        io.observe(el);
+        // تنظيف بعد فترة لتجنّب memory leaks
+        setTimeout(() => io.disconnect(), 30000);
+      } else {
+        // fallback — prefetch مباشرة
+        doPrefetch();
+      }
+    } else if (el && prefetchOn === 'mount') {
+      doPrefetch();
     }
   };
 
   return h('a', {
     href: to,
+    ref,
     onMouseEnter: handleMouseEnter,
+    onFocus: handleFocus,
     ...rest,
   }, children);
 }

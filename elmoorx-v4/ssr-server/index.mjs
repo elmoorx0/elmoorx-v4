@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { compile, liveCompile, clearCompileCache } from '../compiler/index.mjs';
-import { renderToString, h, getSSRData } from '../runtime/core.mjs';
+import { renderToString, h, getSSRData, renderIsland } from '../runtime/core.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -449,38 +449,60 @@ function rateLimitMiddleware(options = {}) {
   const {
     windowMs = 60000, max = 100, message = 'تجاوزت حد الطلبات',
     store = 'memory', storePath = './data/ratelimit',
+    redisUrl = null, // 'redis://host:port' — يستخدم HTTP API أو يتخطى لو غير متاح
   } = options;
 
   const clients = new Map();
   let fileStoreDir = null;
+  let redisClient = null;
 
+  // Initialize store backend
   if (store === 'file') {
     fileStoreDir = resolve(storePath);
     if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
+  } else if (store === 'redis' && redisUrl) {
+    redisClient = createRedisClient(redisUrl);
   }
 
-  // Cleanup
+  // Cleanup expired entries (memory)
   setInterval(() => {
     const now = Date.now();
     for (const [ip, d] of clients) {
       if (now - d.startTime > windowMs) {
         clients.delete(ip);
-        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json')); } catch {} }
+        if (fileStoreDir) {
+          try { unlinkSync(join(fileStoreDir, sanitizeIP(ip) + '.json')); } catch {}
+        }
+        if (redisClient) {
+          redisClient.del(`rl:${sanitizeIP(ip)}`).catch(() => {});
+        }
       }
     }
   }, windowMs);
 
-  const persistClient = (ip, data) => {
+  const persistClient = async (ip, data) => {
     if (fileStoreDir) {
-      try { writeFileSync(join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json'), JSON.stringify(data)); } catch {}
+      try { writeFileSync(join(fileStoreDir, sanitizeIP(ip) + '.json'), JSON.stringify(data)); } catch {}
+    }
+    if (redisClient) {
+      try {
+        await redisClient.setex(`rl:${sanitizeIP(ip)}`, Math.ceil(windowMs / 1000), JSON.stringify(data));
+      } catch {}
     }
   };
 
-  const loadClient = (ip) => {
-    if (!fileStoreDir) return null;
-    const filePath = join(fileStoreDir, ip.replace(/[^a-zA-Z0-9]/g, '_') + '.json');
-    if (existsSync(filePath)) {
-      try { return JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
+  const loadClient = async (ip) => {
+    if (fileStoreDir) {
+      const filePath = join(fileStoreDir, sanitizeIP(ip) + '.json');
+      if (existsSync(filePath)) {
+        try { return JSON.parse(readFileSync(filePath, 'utf8')); } catch {}
+      }
+    }
+    if (redisClient) {
+      try {
+        const data = await redisClient.get(`rl:${sanitizeIP(ip)}`);
+        if (data) return JSON.parse(data);
+      } catch {}
     }
     return null;
   };
@@ -490,8 +512,8 @@ function rateLimitMiddleware(options = {}) {
     const now = Date.now();
 
     let client = clients.get(ip);
-    if (!client && fileStoreDir) {
-      client = loadClient(ip);
+    if (!client && (fileStoreDir || redisClient)) {
+      client = await loadClient(ip);
       if (client) clients.set(ip, client);
     }
 
@@ -524,6 +546,99 @@ function rateLimitMiddleware(options = {}) {
 
     return true;
   };
+}
+
+function sanitizeIP(ip) {
+  return ip.replace(/[^a-zA-Z0-9.:_-]/g, '_');
+}
+
+/**
+ * عميل Redis بسيط — يستخدم RESP2 protocol عبر TCP خام (بدون مكتبات خارجية)
+ * يُفعَّل فقط عند تمرير redisUrl. يدعم: GET, SET, SETEX, DEL
+ */
+function createRedisClient(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname || '127.0.0.1';
+    const port = parseInt(u.port || '6379');
+    const net = require('node:net');
+
+    const socket = net.createConnection({ host, port }, () => {
+      console.log(`  │ Redis:      متصل ${host}:${port}`);
+    });
+    socket.on('error', (err) => {
+      console.log(`  │ Redis:      ⚠ ${err.message}`);
+    });
+    socket.setEncoding('utf8');
+    socket.setKeepAlive(true);
+
+    let buf = '';
+    const waiters = [];
+    socket.on('data', (chunk) => {
+      buf += chunk;
+      // RESP2: الردود تنتهي بـ \r\n
+      while (buf.includes('\r\n')) {
+        const reply = parseRespReply(buf);
+        if (reply === null) break;
+        buf = buf.slice(reply.consumed);
+        const waiter = waiters.shift();
+        if (waiter) waiter.resolve(reply.value);
+      }
+    });
+
+    const send = (cmd) => new Promise((resolve, reject) => {
+      waiters.push({ resolve, reject });
+      socket.write(cmd);
+      setTimeout(() => {
+        const idx = waiters.findIndex(w => w.resolve === resolve);
+        if (idx >= 0) { waiters.splice(idx, 1); reject(new Error('Redis timeout')); }
+      }, 3000);
+    });
+
+    const encode = (args) => `*${args.length}\r\n${args.map(a => `$${Buffer.byteLength(String(a))}\r\n${a}\r\n`).join('')}`;
+
+    return {
+      async get(key) { return send(encode(['GET', key])); },
+      async set(key, val) { return send(encode(['SET', key, val])); },
+      async setex(key, ttl, val) { return send(encode(['SETEX', key, String(ttl), val])); },
+      async del(key) { return send(encode(['DEL', key])); },
+      async ping() { return send(encode(['PING'])); },
+      socket,
+    };
+  } catch (err) {
+    console.log(`  │ Redis:      ⚠ تعذّر التهيئة (${err.message})`);
+    return null;
+  }
+}
+
+function parseRespReply(buf) {
+  const firstByte = buf[0];
+  const endIdx = buf.indexOf('\r\n');
+  if (endIdx === -1) return null;
+
+  if (firstByte === '+') {
+    return { value: buf.slice(1, endIdx), consumed: endIdx + 2 };
+  }
+  if (firstByte === '-') {
+    return { value: null, consumed: endIdx + 2 };
+  }
+  if (firstByte === ':') {
+    return { value: parseInt(buf.slice(1, endIdx)), consumed: endIdx + 2 };
+  }
+  if (firstByte === '$') {
+    const len = parseInt(buf.slice(1, endIdx));
+    if (len === -1) return { value: null, consumed: endIdx + 2 };
+    const dataEnd = endIdx + 2 + len + 2;
+    if (buf.length < dataEnd) return null;
+    return { value: buf.slice(endIdx + 2, endIdx + 2 + len), consumed: dataEnd };
+  }
+  if (firstByte === '*') {
+    const len = parseInt(buf.slice(1, endIdx));
+    if (len === -1) return { value: null, consumed: endIdx + 2 };
+    // simplified — return array
+    return { value: [], consumed: endIdx + 2 };
+  }
+  return { value: buf.slice(0, endIdx), consumed: endIdx + 2 };
 }
 
 function authMiddleware(options = {}) {
@@ -576,14 +691,16 @@ function sessionMiddleware(options = {}) {
     httpOnly = true,
     secure = false,
     sameSite = 'lax',
-    store = 'memory', // 'memory' | 'file'
+    store = 'memory', // 'memory' | 'file' | 'redis'
     storePath = './data/sessions',
+    redisUrl = null,
   } = options;
 
   const sessions = new Map();
   let fileStoreDir = null;
+  let redisClient = null;
 
-  // Initialize file store if needed
+  // Initialize store backend
   if (store === 'file') {
     fileStoreDir = resolve(storePath);
     if (!existsSync(fileStoreDir)) mkdirSync(fileStoreDir, { recursive: true });
@@ -600,9 +717,11 @@ function sessionMiddleware(options = {}) {
         }
       }
     } catch {}
+  } else if (store === 'redis' && redisUrl) {
+    redisClient = createRedisClient(redisUrl);
   }
 
-  // Cleanup expired sessions
+  // Cleanup expired sessions hourly
   setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
@@ -611,13 +730,53 @@ function sessionMiddleware(options = {}) {
         if (fileStoreDir && existsSync(join(fileStoreDir, id + '.json'))) {
           try { unlinkSync(join(fileStoreDir, id + '.json')); } catch {}
         }
+        if (redisClient) {
+          redisClient.del(`sess:${id}`).catch(() => {});
+        }
       }
     }
   }, 3600000);
 
-  const persistSession = (id, session) => {
+  const persistSession = async (id, session) => {
     if (fileStoreDir) {
       try { writeFileSync(join(fileStoreDir, id + '.json'), JSON.stringify(session)); } catch {}
+    }
+    if (redisClient) {
+      try {
+        await redisClient.setex(`sess:${id}`, maxAge, JSON.stringify(session));
+      } catch {}
+    }
+  };
+
+  const loadSession = async (id) => {
+    if (fileStoreDir) {
+      const filePath = join(fileStoreDir, id + '.json');
+      if (existsSync(filePath)) {
+        try {
+          const data = JSON.parse(readFileSync(filePath, 'utf8'));
+          if (data.expires > Date.now()) return data;
+        } catch {}
+      }
+    }
+    if (redisClient) {
+      try {
+        const raw = await redisClient.get(`sess:${id}`);
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data.expires > Date.now()) return data;
+        }
+      } catch {}
+    }
+    return null;
+  };
+
+  const destroySession = async (id) => {
+    sessions.delete(id);
+    if (fileStoreDir && existsSync(join(fileStoreDir, id + '.json'))) {
+      try { unlinkSync(join(fileStoreDir, id + '.json')); } catch {}
+    }
+    if (redisClient) {
+      try { await redisClient.del(`sess:${id}`); } catch {}
     }
   };
 
@@ -630,25 +789,17 @@ function sessionMiddleware(options = {}) {
     if (sessionId && sessions.has(sessionId)) {
       session = sessions.get(sessionId);
       if (session.expires < Date.now()) {
-        sessions.delete(sessionId);
-        if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
+        await destroySession(sessionId);
         session = null;
         sessionId = null;
       }
     }
 
-    // Try loading from file store if not in memory
-    if (!session && fileStoreDir && sessionId) {
-      const filePath = join(fileStoreDir, sessionId + '.json');
-      if (existsSync(filePath)) {
-        try {
-          const data = JSON.parse(readFileSync(filePath, 'utf8'));
-          if (data.expires > Date.now()) {
-            session = data;
-            sessions.set(sessionId, session);
-          }
-        } catch {}
-      }
+    // Try loading from persistent store if not in memory
+    if (!session && (fileStoreDir || redisClient) && sessionId) {
+      session = await loadSession(sessionId);
+      if (session) sessions.set(sessionId, session);
+      else { sessionId = null; }
     }
 
     if (!session) {
@@ -657,20 +808,21 @@ function sessionMiddleware(options = {}) {
         id: sessionId,
         data: {},
         expires: Date.now() + maxAge * 1000,
-        get: (key) => session.data[key],
-        set: (key, value) => { session.data[key] = value; persistSession(sessionId, session); },
-        destroy: () => {
-          sessions.delete(sessionId);
-          if (fileStoreDir) { try { unlinkSync(join(fileStoreDir, sessionId + '.json')); } catch {} }
-          session.data = {};
-        },
       };
       sessions.set(sessionId, session);
-      persistSession(sessionId, session);
+      await persistSession(sessionId, session);
 
       // Set cookie
       ctx.res.setHeader('Set-Cookie', `${cookieName}=${sessionId}; Path=/; Max-Age=${maxAge}; HttpOnly=${httpOnly}; SameSite=${sameSite}${secure ? '; Secure' : ''}`);
     }
+
+    // Attach helpers (rebuild on every request because data may have been loaded from disk)
+    session.get = (key) => session.data[key];
+    session.set = (key, value) => {
+      session.data[key] = value;
+      persistSession(sessionId, session);
+    };
+    session.destroy = () => destroySession(sessionId);
 
     ctx.session = session;
     return true;
@@ -834,4 +986,73 @@ async function loadModuleDynamic(code) {
   finally { try { unlinkSync(tmpFile); } catch {} }
 }
 
-export default { startSSRServer, signJWT, verifyJWT, corsMiddleware, rateLimitMiddleware, authMiddleware, sessionMiddleware };
+// ─────────────────────────────────────────────────────────────────────────────
+// 10) STREAMING SSR — renderToStream()
+// يكتب HTML على أجزاء عبر res.write() بحيث يستطيع المتصفح عرض الـ head
+// والـ static parts قبل اكتمال الـ data loaders. يقلل TTFB و يحسّن FCP.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * renderToStream — يُرجع async generator يضخّ chunks من HTML تدريجياً
+ * @param {object} componentFn  دالة المكون الجذري
+ * @param {object} options      { title, data, params, path, frameworkDir, head, onChunk }
+ */
+export async function renderToStream(res, componentFn, options = {}) {
+  const {
+    title = 'Elmoorx App',
+    data = {},
+    params = {},
+    path = '/',
+    frameworkDir = null,
+    onChunk = null,
+  } = options;
+
+  const runtimePath = frameworkDir && existsSync(join(frameworkDir, 'runtime', 'core.mjs'))
+    ? '/runtime/core.mjs'
+    : '/.elmoorx/runtime/core.mjs';
+
+  // 1) Head chunk — فوراً
+  const headChunk = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>${title}</title><link rel="manifest" href="/manifest.json"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui}#app{min-height:100vh}</style></head><body><div id="app">`;
+  res.write(headChunk);
+  if (onChunk) await onChunk('head', headChunk);
+
+  // 2) Body chunks — مع جزر معلّمة للـ partial hydration
+  let bodyChunk;
+  try {
+    const vdom = typeof componentFn === 'function' ? componentFn({ data, params }) : componentFn;
+    bodyChunk = renderToString(vdom);
+  } catch (err) {
+    bodyChunk = `<div style="padding:2rem;color:red;">Render Error: ${err.message}</div>`;
+  }
+  res.write(bodyChunk);
+  if (onChunk) await onChunk('body', bodyChunk);
+
+  // 3) State + Hydration script chunk
+  const ssrData = getSSRData() || { islands: [] };
+  const islandData = JSON.stringify({
+    islands: ssrData.islands,
+    data,
+    params,
+    path,
+  }).replace(/</g, '\\u003c');
+
+  const tailChunk = `</div><script>window.__ELMOORX_SSR_DATA__=${islandData};</script><script type="module">import{hydrateIslands}from'${runtimePath}';hydrateIslands();</script></body></html>`;
+  res.end(tailChunk);
+  if (onChunk) await onChunk('tail', tailChunk);
+
+  return { head: headChunk.length, body: bodyChunk.length, tail: tailChunk.length };
+}
+
+/**
+ * renderIslandsSSR — يلفّ المكون الجذري بـ islands للـ partial hydration
+ * يستخدم renderIsland() من الـ runtime لتحديد الجزر التفاعلية صراحةً
+ */
+export function renderIslandsSSR(componentFn, options = {}) {
+  const { data = {}, params = {} } = options;
+  const vdom = componentFn({ data, params });
+  // renderToString يقوم تلقائياً بلفّ المكونات التي تحتوي على on* events
+  // بـ data-elmoorx-island — نُرجع HTML مع وسوم الجزر
+  return renderToString(vdom);
+}
+
+export default { startSSRServer, signJWT, verifyJWT, corsMiddleware, rateLimitMiddleware, authMiddleware, sessionMiddleware, renderToStream, renderIslandsSSR };

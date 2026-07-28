@@ -9,8 +9,10 @@
  *   - دمج الـ var declarations
  *   - تحويل true/false إلى !0/!1 (اختياري)
  *   - إزالة dead code (if(false), إلخ)
- *   - تقليل أسماء المتغيرات المحلية (اختياري - يتطلب scope analysis)
+ *   - تقليل أسماء المتغيرات المحلية (scope-aware، آمن)
  */
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1) MINIFY
@@ -295,18 +297,15 @@ function removeDeadCodeFromCode(code) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function mangleLocalVars(code) {
-  // تحليل بسيط — فقط للمتغيرات المحلية في الدوال
-  // هذه عملية معقدة وتتطلب scope analysis كامل
-  // هنا نُطبّق تحسينات آمنة فقط
-
-  // إعادة تسمية المتغيرات في الـ for loops
-  let counter = 0;
-  code = code.replace(/\bfor\s*\(\s*(?:let|var|const)\s+(\w+)\s+in\s+/g, (match, varName) => {
-    const newName = '_' + (counter++).toString(36);
-    return match.replace(varName, newName);
-  });
-
-  return code;
+  try {
+    // استخدم الـ mangler الجديد المعتمد على scope analysis كامل
+    // (يحلّل scopes ويُعيد تسمية المتغيرات المحلية بأمان)
+    const { mangleVars } = require('./mangler.mjs');
+    return mangleVars(code);
+  } catch (err) {
+    // fallback آمن — أرجع الكود كما هو
+    return code;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

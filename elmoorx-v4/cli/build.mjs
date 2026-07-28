@@ -360,7 +360,10 @@ function formatBytes(bytes) {
 
 // استخراج CSS من ملفات JS المبنية
 function extractCSSFromBuild(distPath) {
-  let allCSS = '';
+  const collectedCSS = [];
+  const classRegistry = new Map(); // hash → class name
+  let classCounter = 0;
+
   const walk = (dir) => {
     try {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -369,38 +372,116 @@ function extractCSSFromBuild(distPath) {
           walk(fullPath);
         } else if (entry.name.endsWith('.mjs') || entry.name.endsWith('.js')) {
           const content = readFileSync(fullPath, 'utf8');
-          // استخرج style strings من الكود
-          const styleMatches = content.matchAll(/style:\s*['"`]([^'"`]+)['"`]/g);
-          for (const m of styleMatches) {
-            // حوّل inline style إلى CSS rules
-            const styles = m[1].split(';').filter(s => s.trim());
-            // لا يمكن استخراجها كـ CSS rules مباشرة (لا selectors) — نجمّعها كـ utility classes
-          }
-          // استخرج @elmoorx/css imports
+
+          // 1) استخراج CSS imports صريحة
           const cssImportMatch = content.match(/import\s+['"]\.\/[^'"]*\.css['"]/g);
           if (cssImportMatch) {
             for (const imp of cssImportMatch) {
               const cssPath = imp.match(/['"]([^'"]+)['"]/)[1];
               const resolvedPath = join(dirname(fullPath), cssPath);
               if (existsSync(resolvedPath)) {
-                allCSS += readFileSync(resolvedPath, 'utf8') + '\n';
+                collectedCSS.push(readFileSync(resolvedPath, 'utf8'));
               }
             }
           }
+
+          // 2) استخراج <style> blocks داخل tagged templates أو strings
+          // pattern: css`...` أو styled`...` أو `<style>...</style>`
+          const templateLiteralCSS = content.matchAll(/(?:css|styled|styles?)\s*`([^`]+)`/g);
+          for (const m of templateLiteralCSS) {
+            const cssContent = m[1].trim();
+            if (cssContent && cssContent.includes('{') && cssContent.includes('}')) {
+              collectedCSS.push(cssContent);
+            }
+          }
+
+          // 3) استخراج inline styles من كائنات style: { ... }
+          // حوّلها إلى utility classes تلقائياً
+          const styleObjPattern = /style\s*:\s*\{([^}]+)\}/g;
+          let styleMatch;
+          while ((styleMatch = styleObjPattern.exec(content)) !== null) {
+            const styleBody = styleMatch[1];
+            // تجاهل الكائنات الديناميكية (تحتوي على متغيرات)
+            if (/\$\{|\bvar\b|\bfn\b|\bfunc\b/.test(styleBody)) continue;
+            const hash = hashString(styleBody);
+            if (classRegistry.has(hash)) continue;
+            const className = `ex${(classCounter++).toString(36)}_${hash.slice(0, 6)}`;
+            classRegistry.set(hash, className);
+            // حوّل camelCase إلى kebab-case وأضف وحدة px إذا لزم
+            const cssRules = styleBody
+              .split(',')
+              .map(rule => {
+                const [k, v] = rule.split(':').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
+                if (!k || !v) return null;
+                const prop = k.replace(/([A-Z])/g, '-$1').toLowerCase();
+                // إذا كانت القيمة رقمية، أضف px (إلا لخصائص معينة)
+                const isUnitless = /^(opacity|zIndex|fontWeight|flexGrow|flexShrink|lineHeight|order|animationIterationCount)$/.test(prop);
+                const value = /^\d+$/.test(v) && !isUnitless ? v + 'px' : v;
+                return `${prop}:${value}`;
+              })
+              .filter(Boolean)
+              .join(';');
+            if (cssRules) {
+              collectedCSS.push(`.${className}{${cssRules}}`);
+            }
+          }
+
+          // 4) استخراج style strings من style: "..." — حوّلها إلى classes
+          const styleStrPattern = /style\s*:\s*['"`]([^'"`]+)['"`]/g;
+          let strMatch;
+          while ((strMatch = styleStrPattern.exec(content)) !== null) {
+            const styleStr = strMatch[1].trim();
+            if (!styleStr || styleStr.length < 3) continue;
+            const hash = hashString(styleStr);
+            if (classRegistry.has(hash)) continue;
+            const className = `ex${(classCounter++).toString(36)}_${hash.slice(0, 6)}`;
+            classRegistry.set(hash, className);
+            collectedCSS.push(`.${className}{${styleStr.replace(/;$/, '')}}`);
+          }
+
+          // 5) استخراج @elmoorx/css directives إن وجدت
+          const directivePattern = /\/\*\s*@elmoorx\/css\s*\*\/\s*['"`]([^'"`]+)['"`]/g;
+          let dirMatch;
+          while ((dirMatch = directivePattern.exec(content)) !== null) {
+            collectedCSS.push(dirMatch[1]);
+          }
         } else if (entry.name.endsWith('.css')) {
-          allCSS += readFileSync(fullPath, 'utf8') + '\n';
+          collectedCSS.push(readFileSync(fullPath, 'utf8'));
         }
       }
     } catch {}
   };
+
   walk(distPath);
 
-  // أضف CSS الافتراضي للـ theme
-  if (allCSS) {
-    allCSS = `/* Elmoorx v4 — Extracted CSS */\n:root{--color-primary:#0ea5e9;--color-success:#10b981;--color-warning:#f59e0b;--color-danger:#ef4444;--color-bg:#0f172a;--color-surface:#1e293b;--color-text:#e2e8f0;--color-muted:#94a3b8;--color-border:#334155}\n` + allCSS;
-  }
+  if (collectedCSS.length === 0) return null;
 
-  return allCSS || null;
+  // إزالة التكرار والتنظيف
+  const uniqueCSS = [...new Set(collectedCSS)].join('\n');
+  // أضف CSS الافتراضي للـ theme
+  const themeCSS = `/* Elmoorx v4 — Extracted CSS */
+:root{--color-primary:#0ea5e9;--color-success:#10b981;--color-warning:#f59e0b;--color-danger:#ef4444;--color-bg:#0f172a;--color-surface:#1e293b;--color-text:#e2e8f0;--color-muted:#94a3b8;--color-border:#334155;--radius-sm:4px;--radius-md:8px;--radius-lg:12px;--shadow-sm:0 1px 2px rgba(0,0,0,0.05);--shadow-md:0 4px 6px rgba(0,0,0,0.1)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;line-height:1.5}
+#app{min-height:100vh}
+img{max-width:100%;height:auto}
+a{color:var(--color-primary);text-decoration:none}
+a:hover{text-decoration:underline}
+button{cursor:pointer;font-family:inherit}
+input,textarea,select{font-family:inherit;font-size:inherit}
+`;
+
+  return themeCSS + uniqueCSS + '\n';
+}
+
+function hashString(s) {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    const char = s.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
 }
 
 import { fileURLToPath } from 'node:url';

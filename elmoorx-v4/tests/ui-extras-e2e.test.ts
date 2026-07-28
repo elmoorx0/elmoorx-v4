@@ -50,7 +50,9 @@ describe('UI Extras — ContextMenu', () => {
     const html = renderToString(h(ContextMenu, {
       items: [{ label: 'Copy' }],
     }, 'Target'));
-    expect(html).not.toContain('Copy');
+    // تجنّب فحص data-props لأنها قد تحتوي على القيم مُشفّرة (island wrapper)
+    const visibleHtml = html.replace(/data-props="[^"]*"/g, '');
+    expect(visibleHtml).not.toContain('Copy');
   });
 });
 
