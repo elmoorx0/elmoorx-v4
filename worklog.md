@@ -188,3 +188,120 @@ Stage Summary:
 - مثال تطبيق إنتاجي كامل مع كل الميزات
 - README محدّث بالكامل
 - الإطار الآن جاهز للنشر الإنتاجي الفعلي على Kubernetes/Docker/Vercel/Cloudflare
+
+---
+Task ID: elmoorx-v4-advanced-production
+Agent: main (Super Z)
+Task: إضافة ميزات إنتاجية متقدمة (tracing + cache + config + Docker/K8s + CI/CD + load testing)
+
+Work Log:
+- إنشاء `ssr-server/tracing.mjs` — تتبّع موزّع OpenTelemetry-style:
+  - W3C Trace Context (traceparent header)
+  - Span generation مع traceId/spanId/parentSpanId
+  - startSpan, endSpan, addEvent, setAttribute, setStatus
+  - Exporters: console, file (JSONL), OTLP/HTTP (Tempo, Jaeger, Honeycomb)
+  - Sampling rate قابل للتخصيص
+  - tracingMiddleware للـ HTTP requests
+  - propagateTrace + tracedFetch للـ outgoing requests
+  - 5 اختبارات
+
+- إنشاء `ssr-server/cache.mjs` — طبقة تخزين مؤقت:
+  - LRU eviction (يحذف الأقل استخداماً)
+  - TTL تلقائي (ينتهي بعد فترة)
+  - Tag-based invalidation (invalidateTag, invalidateTags)
+  - getOrSet (يحسب القيمة إن لم تكن موجودة)
+  - إحصائيات (hits, misses, hitRate, size, totalBytes)
+  - cacheMiddleware للـ HTTP responses
+  - async-safe
+  - 8 اختبارات
+
+- إنشاء `utils/config.mjs` — إدارة الإعدادات:
+  - parseEnvFile (POSIX-compatible .env parser)
+  - دعم quotes (single, double)
+  - Variable interpolation ($VAR, ${VAR}, ${VAR:-default})
+  - loadEnv (multi-file: .env, .env.local, .env.{NODE_ENV})
+  - getConfig مع types (string, number, boolean, json, array)
+  - validateConfig (schema validation)
+  - getConfigByPrefix
+  - 10 اختبارات
+
+- إنشاء `Dockerfile` — Multi-stage production:
+  - Stage 1: builder
+  - Stage 2: production مع tini + non-root user + health check
+  - دعم amd64 + arm64
+
+- إنشاء `docker-compose.yml` — stack كامل:
+  - 3 app replicas
+  - Redis (sessions + rate limit distributed)
+  - NGINX load balancer
+  - Prometheus (metrics)
+  - Grafana (dashboards)
+
+- إنشاء `deploy/nginx.conf` — NGINX config كامل:
+  - Load balancing (least_conn)
+  - SSL termination
+  - Gzip + Brotli
+  - Rate limiting (api: 100r/s, auth: 5r/s)
+  - Caching for static assets
+  - Security headers
+  - Structured JSON logging
+
+- إنشاء `deploy/prometheus.yml` — Prometheus config
+
+- إنشاء `deploy/kubernetes/manifests.yaml` — Kubernetes كامل:
+  - Namespace
+  - ConfigMap + Secret
+  - Deployment (3 replicas مع resource limits)
+  - Service (ClusterIP)
+  - HorizontalPodAutoscaler (3-10 replicas، CPU 70%)
+  - PodDisruptionBudget
+  - Ingress مع SSL + rate limiting
+  - Redis Deployment + PVC
+
+- إنشاء `.github/workflows/ci-cd.yml` — CI/CD pipeline:
+  - Test job (607 اختبار)
+  - Security scan (secrets + vulnerabilities)
+  - Build Docker (multi-arch: amd64 + arm64)
+  - Deploy staging (develop branch)
+  - Deploy production (tags v*)
+  - Release (auto changelog)
+
+- إنشاء `scripts/load-test.mjs` — load testing tool:
+  - N طلب متزامن
+  - معدل طلبات قابل للتحكم
+  - إحصائيات مفصّلة (latency percentiles, throughput, status codes)
+  - دعم endpoints متعددة
+  - دعم method, body, headers مخصصة
+  - JSON output mode
+
+- تحديث `cli/dockerize.mjs`:
+  - توليد Dockerfile multi-stage مع tini + non-root
+  - توليد docker-compose.yml مع Redis/Prometheus/Grafana
+  - توليد Kubernetes manifests (--kubernetes=true)
+  - توليد prometheus.yml
+  - خيارات: --replicas, --redis, --prometheus, --grafana, --kubernetes
+
+- تحديث README.md:
+  - تحديث tests badge إلى 607
+  - قسم Docker + Kubernetes
+  - قسم CI/CD
+  - قسم Tracing الموزّع
+  - قسم Cache layer
+  - قسم Config management
+  - قسم Load Testing مع نتائج مرجعية
+
+- نتائج اختبار الأداء المرجعية:
+  - /health: 7,700 req/s, p50=1.3ms, p99=25ms, 100% success
+  - SSR + compression: 870 req/s, p50=58ms, p99=123ms, 100% success
+
+Stage Summary:
+- 607 اختبار ناجح (584 + 23 جديد)، 0 فشل، في 2.0 ثانية
+- 7 ملفات جديدة (tracing, cache, config, Dockerfile, docker-compose, nginx.conf, k8s manifests, ci-cd.yml, load-test.mjs)
+- تحديث dockerize CLI command
+- README محدّث بالكامل
+- الإطار الآن جاهز للنشر الإنتاجي الكامل على:
+  - Docker (single container)
+  - Docker Compose (full stack)
+  - Kubernetes (production-grade)
+  - CI/CD pipeline تلقائي
+  - مراقبة كاملة (Prometheus + Grafana + tracing + structured logging)
