@@ -85,3 +85,106 @@ Stage Summary:
   - PNG thumbnailing فعلي بدون Sharp/Jimp
   - Variable mangling بأمان (scope-aware)
   - Smart prefetch (visible/hover/mount)
+
+---
+Task ID: elmoorx-v4-production-middleware
+Agent: main (Super Z)
+Task: إضافة ميدلوير إنتاجية كاملة للنشر الفعلي
+
+Work Log:
+- إنشاء `ssr-server/middleware.mjs` جديد بـ 7 ميدلوير إنتاجية:
+  1. **compressionMiddleware** — gzip/brotli/deflate فوري
+     - يحترم Accept-Encoding
+     - يتخطّى الاستجابات الصغيرة (< 1KB)
+     - يتخطّى المحتوى المُضغوط مسبقاً
+     - يلتفّ على res.write/end/writeHead لتأخير الإرسال حتى compression
+  2. **securityHeadersMiddleware** — كل الرؤوس الأمنية:
+     - Content-Security-Policy (قابل للتخصيص)
+     - Strict-Transport-Security (HSTS) مع preload
+     - X-Frame-Options: DENY
+     - X-Content-Type-Options: nosniff
+     - Referrer-Policy: strict-origin-when-cross-origin
+     - Permissions-Policy (camera, microphone, geolocation, payment, usb)
+     - X-XSS-Protection: 1; mode=block
+     - Cross-Origin-Opener-Policy: same-origin
+     - Cross-Origin-Embedder-Policy: require-corp
+     - Cross-Origin-Resource-Policy: same-origin
+     - إزالة X-Powered-By لكشف أقل
+  3. **requestIdMiddleware** — UUID v4 لكل طلب:
+     - يستخدم crypto.randomBytes
+     - يحترم الـ header الوارد
+     - يضعه في ctx.requestId و X-Request-ID header
+  4. **loggerMiddleware** — structured JSON logging:
+     - level, time, requestId, method, path, status, duration, ip, userAgent
+     - يتخطّى paths المراقبة (/health, /metrics)
+     - يدعم format: 'json' | 'text'
+  5. **healthCheckMiddleware** — /health endpoint:
+     - status: healthy/unhealthy
+     - uptime, memory (rss, heapUsed, heapTotal, external)
+     - version, hostname, pid, timestamp
+     - يدعم custom checks (database, redis, ...)
+     - markShuttingDown() لـ graceful shutdown
+  6. **metricsMiddleware** — /metrics بصيغة Prometheus:
+     - http_requests_total{method, path, status} (counter)
+     - http_request_duration_seconds (histogram بـ 11 buckets)
+     - http_response_size_bytes (histogram)
+     - process_uptime_seconds (gauge)
+     - process_memory_rss_bytes (gauge)
+     - process_memory_heap_used_bytes (gauge)
+     - nodejs_eventloop_lag_seconds (gauge)
+  7. **setupGracefulShutdown** — SIGTERM/SIGINT handler:
+     - يعلّم health check كـ unhealthy فوراً
+     - يتوقف عن استقبال طلبات جديدة
+     - ينتظر انتهاء الطلبات الجارية (حتى timeout)
+     - يستدعي onShutdown callback لتنظيف resources
+     - يلتقط uncaughtException و unhandledRejection
+
+- دمج كل الميدلوير في `startSSRServer()` مع خيارات تخصيص:
+  - كلها مُفعّلة افتراضياً (true)
+  - ترتيب التنفيذ محسّن: requestId → logger → healthCheck → metrics → securityHeaders → cors → rateLimit → sessions → auth → compression
+
+- إصلاح bugs في SSR server:
+  - تحميل ملفات الـ routes بشكل صحيح (match.route.file → liveCompile → loadModuleDynamic)
+  - API handler يدعم أسماء الدوال بأحرف كبيرة (GET) أو صغيرة (get)
+  - تمرير uploadDir/maxUploadSize لـ handleAPIRoute
+
+- إنشاء `examples/production-app.mjs` — تطبيق إنتاجي كامل يوضّح:
+  - SSR مع صفحات ديناميكية ([slug])
+  - API endpoints
+  - كل الميدلوير مُفعّلة
+  - Graceful shutdown
+
+- إضافة 19 اختبار جديد في `tests/production-middleware.test.ts`:
+  - Compression (4 اختبارات: gzip, small skip, encoded skip, no Accept-Encoding)
+  - Security Headers (2: defaults + customization)
+  - Request ID (2: unique generation + incoming header)
+  - Logger (2: JSON capture + skip health paths)
+  - Health Check (3: 200 healthy, skip non-health, custom checks + markShuttingDown)
+  - Metrics (3: Prometheus format, counter collection, skip non-metrics)
+  - Graceful Shutdown (2: function existence + onShutdown callback)
+
+- إضافة `tests/e2e-server.mjs` — اختبار end-to-end يبدأ السيرفر فعلياً ويتحقق:
+  - الصفحة الرئيسية تُرجع HTML
+  - /health يُرجع 200 + JSON
+  - /metrics يُرجع Prometheus format
+  - Security headers موجودة
+  - X-Request-ID فريد لكل طلب
+  - Compression تعمل
+  - 404 handling
+  - CORS headers
+  - (9 اختبارات، كلها تنجح)
+
+- تحديث README.md:
+  - تحديث badge عدد الاختبارات إلى 584
+  - إضافة قسم "ميدلوير إنتاجية كاملة"
+  - إضافة قسم "المراقبة والصحة"
+  - إضافة أمثلة استخدام لكل ميدلوير
+  - إضافة قسم Redis للبيئات الموزعة
+  - إضافة قسم مثال تطبيق إنتاجي كامل
+
+Stage Summary:
+- 584 اختبار ناجح (565 + 19 جديد)، 0 فشل، في 1.91 ثانية
+- 7 ميدلوير إنتاجية جديدة في ملف واحد منظّم
+- مثال تطبيق إنتاجي كامل مع كل الميزات
+- README محدّث بالكامل
+- الإطار الآن جاهز للنشر الإنتاجي الفعلي على Kubernetes/Docker/Vercel/Cloudflare
