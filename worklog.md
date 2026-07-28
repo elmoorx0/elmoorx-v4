@@ -305,3 +305,78 @@ Stage Summary:
   - Kubernetes (production-grade)
   - CI/CD pipeline تلقائي
   - مراقبة كاملة (Prometheus + Grafana + tracing + structured logging)
+
+---
+Task ID: elmoorx-v4-critical-fixes
+Agent: main (Super Z)
+Task: إصلاح الفجوات الحرجة الأربعة للوصول لجاهزية إنتاج 100%
+
+Work Log:
+- إصلاح #1: TS Compiler bugs الحرجة
+  - `removeTypeAnnotations`: أعدت كتابتها بالكامل بـ context-aware scope tracking
+    - يتتبع braceStack (object/type/block/class) لتمييز object literals عن type blocks
+    - لا يحذف `: value` داخل object literals أبداً ( كان يفسد `{ x: null }` → `{ x }`)
+    - يكتشف function calls (مثل `Buffer.from(...)`) ولا يفسدها كـ type annotations
+    - يتعامل مع return types قبل `=>` و `{` بشكل صحيح
+    - يحافظ على مسافة قبل `=` و `{` بعد حذف النوع
+  - `removeAsCasts`: أعدت كتابتها بـ string/comment-aware parser
+    - لا يحذف `as Type` من داخل strings أو comments (كان يفسد ملفات الاختبار)
+  - النتيجة: 16/16 اختبار compiler حالة تنجح، 0 فشل
+
+- إصلاح #2: Redis client متقدم (ssr-server/redis-client.mjs)
+  - RESP2 protocol encoder/decoder كامل
+  - AUTH (كلمات السر) — cleartext + MD5
+  - Connection pooling (N connections مع round-robin)
+  - Reconnection تلقائي مع exponential/linear/fixed backoff
+  - Pub/Sub (subscribe/unsubscribe/publish)
+  - Pipeline (أوامر متعددة في طلب واحد)
+  - Lua scripting (EVAL)
+  - High-level API: get/set/del/incr/hget/hset/lpush/sadd/zadd/keys/scan/...
+  - URL parser: redis://[password@]host:port/db
+  - Health check (PING)
+  - 12 اختبار جديد
+
+- إصلاح #3: WebSocket server متقدم (ssr-server/ws-server.mjs)
+  - RFC 6455 frame protocol (encode/decode)
+  - Rooms/Channels (join/leave/broadcast to room)
+  - Message queuing (للرسائل غير المُسلَّمة)
+  - Heartbeat/Ping-Pong دوري
+  - Authentication middleware
+  - Binary support
+  - Statistics (connections, messages, broadcasts, rooms)
+  - WebSocket handshake (HTTP 101 upgrade)
+  - 9 اختبارات جديدة
+
+- إصلاح #4: SQL Database adapter (database/sql-adapter.mjs)
+  - PostgreSQL v3 protocol مبني على TCP خام
+  - Connection pooling
+  - Transactions (BEGIN/COMMIT/ROLLBACK)
+  - Prepared statements (Parse/Bind/Execute/Sync)
+  - High-level API: query/queryOne/insert/update/delete
+  - Migration framework (مع _migrations table tracking)
+  - URL parser: postgres://user:pass@host:port/db?ssl=true
+  - 5 اختبارات جديدة
+
+- إصلاح #5: Compression middleware (إصلاح streaming)
+  - عاد إلى synchronous compression مع Content-Length صحيح
+  - يضغط body المُجمّع من chunks دفعة واحدة
+  - يدعم br/gzip/deflate
+  - النتيجة: 753 req/s مع compression، 100% success
+
+- إصلاح #6: i18n setLocale defensive
+  - يتحقق من document.documentElement قبل محاولة تعيين lang/dir
+  - يمنع crash في بيئات test التي تضع mock document بدون documentElement
+
+Stage Summary:
+- 649 اختبار ناجح (607 + 42 جديد)، 0 فشل، في 2.0 ثانية
+- 4 ملفات جديدة: redis-client.mjs, ws-server.mjs, sql-adapter.mjs, critical-fixes.test.ts
+- 3 ملفات مُصلَّحة: compiler/index.mjs, ssr-server/index.mjs, i18n/index.mjs
+- TS compiler الآن يتعامل بشكل صحيح مع:
+  - object literals ({ x: null, y: "hello" })
+  - ternaries مع function calls (cond ? a : Buffer.from(b))
+  - return types قبل => و {
+  - as casts داخل strings/comments
+- Redis client مع pool + AUTH + reconnection + pub/sub + pipeline + Lua
+- WebSocket server مع rooms + heartbeat + auth + queuing
+- PostgreSQL adapter مع pool + transactions + migrations
+- Compression يعمل: 753 req/s، 100% success، 502 bytes (من 1158)

@@ -111,7 +111,7 @@ export function compressionMiddleware(options = {}) {
 
       const body = Buffer.concat(chunks);
 
-      // تحقق ما إذا كنا سنضغط — اضبط الـ headers BEFORE writeHead
+      // تحقق ما إذا كنا سنضغط
       const alreadyEncoded = res.getHeader('content-encoding');
       const shouldCompress =
         !alreadyEncoded &&
@@ -119,15 +119,14 @@ export function compressionMiddleware(options = {}) {
         types.some(t => collectedContentType.startsWith(t));
 
       if (!shouldCompress) {
-        // اضبط Content-Length قبل writeHead
+        // استخدم الإرسال العادي
         try { originalSetHeader('Content-Length', String(body.length)); } catch {}
-        // أرسل الـ status
         originalWriteHead(pendingStatus);
         if (body.length > 0) originalWrite(body);
         return originalEnd();
       }
 
-      // اضغط
+      // اضغط (متزامن — body вже في memory من الـ chunks)
       let compressed, encoding;
       try {
         if (supportsBr) {
@@ -152,7 +151,7 @@ export function compressionMiddleware(options = {}) {
         return originalEnd();
       }
 
-      // اضبط headers الضغط قبل writeHead
+      // اضبط headers قبل writeHead
       try {
         originalSetHeader('Content-Encoding', encoding);
         originalSetHeader('Content-Length', String(compressed.length));

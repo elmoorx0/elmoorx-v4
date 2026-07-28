@@ -35,9 +35,11 @@ export function defineLocale(locale, dict) {
 export function setLocale(locale) {
   currentLocale.set(locale);
   // حدّث <html lang> و dir
-  if (typeof document !== 'undefined') {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = isRTL(locale) ? 'rtl' : 'ltr';
+  if (typeof document !== 'undefined' && document.documentElement) {
+    try {
+      document.documentElement.lang = locale;
+      document.documentElement.dir = isRTL(locale) ? 'rtl' : 'ltr';
+    } catch {}
   }
 }
 

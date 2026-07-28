@@ -167,7 +167,9 @@ class LoadTester {
       }
 
       const res = await fetch(url, options);
-      const text = await res.text();
+      // استخدم res.arrayBuffer بدلاً من res.text() للتعامل مع الـ responses المضغوطة
+      const buffer = await res.arrayBuffer();
+      const text = new TextDecoder().decode(buffer);
       const duration = performance.now() - start;
 
       this.results.push({

@@ -29,6 +29,7 @@ import {
   metricsMiddleware,
   setupGracefulShutdown,
 } from './middleware.mjs';
+import { createRedisClient as createRedisClientAdvanced } from './redis-client.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -635,55 +636,20 @@ function sanitizeIP(ip) {
  * عميل Redis بسيط — يستخدم RESP2 protocol عبر TCP خام (بدون مكتبات خارجية)
  * يُفعَّل فقط عند تمرير redisUrl. يدعم: GET, SET, SETEX, DEL
  */
+/**
+ * عميل Redis متقدم — يستخدم الـ connection pool مع AUTH, reconnection, pub/sub
+ * يُفعَّل فقط عند تمرير redisUrl. يدعم: GET, SET, SETEX, DEL, PING, + جميع الأوامر
+ */
 function createRedisClient(url) {
   try {
-    const u = new URL(url);
-    const host = u.hostname || '127.0.0.1';
-    const port = parseInt(u.port || '6379');
-    const net = require('node:net');
-
-    const socket = net.createConnection({ host, port }, () => {
-      console.log(`  │ Redis:      متصل ${host}:${port}`);
+    const client = createRedisClientAdvanced({
+      url,
+      poolSize: 5,
+      retryStrategy: 'exponential',
+      maxRetries: 10,
     });
-    socket.on('error', (err) => {
-      console.log(`  │ Redis:      ⚠ ${err.message}`);
-    });
-    socket.setEncoding('utf8');
-    socket.setKeepAlive(true);
-
-    let buf = '';
-    const waiters = [];
-    socket.on('data', (chunk) => {
-      buf += chunk;
-      // RESP2: الردود تنتهي بـ \r\n
-      while (buf.includes('\r\n')) {
-        const reply = parseRespReply(buf);
-        if (reply === null) break;
-        buf = buf.slice(reply.consumed);
-        const waiter = waiters.shift();
-        if (waiter) waiter.resolve(reply.value);
-      }
-    });
-
-    const send = (cmd) => new Promise((resolve, reject) => {
-      waiters.push({ resolve, reject });
-      socket.write(cmd);
-      setTimeout(() => {
-        const idx = waiters.findIndex(w => w.resolve === resolve);
-        if (idx >= 0) { waiters.splice(idx, 1); reject(new Error('Redis timeout')); }
-      }, 3000);
-    });
-
-    const encode = (args) => `*${args.length}\r\n${args.map(a => `$${Buffer.byteLength(String(a))}\r\n${a}\r\n`).join('')}`;
-
-    return {
-      async get(key) { return send(encode(['GET', key])); },
-      async set(key, val) { return send(encode(['SET', key, val])); },
-      async setex(key, ttl, val) { return send(encode(['SETEX', key, String(ttl), val])); },
-      async del(key) { return send(encode(['DEL', key])); },
-      async ping() { return send(encode(['PING'])); },
-      socket,
-    };
+    console.log(`  │ Redis:      pool=5 ${url}`);
+    return client;
   } catch (err) {
     console.log(`  │ Redis:      ⚠ تعذّر التهيئة (${err.message})`);
     return null;
@@ -691,33 +657,8 @@ function createRedisClient(url) {
 }
 
 function parseRespReply(buf) {
-  const firstByte = buf[0];
-  const endIdx = buf.indexOf('\r\n');
-  if (endIdx === -1) return null;
-
-  if (firstByte === '+') {
-    return { value: buf.slice(1, endIdx), consumed: endIdx + 2 };
-  }
-  if (firstByte === '-') {
-    return { value: null, consumed: endIdx + 2 };
-  }
-  if (firstByte === ':') {
-    return { value: parseInt(buf.slice(1, endIdx)), consumed: endIdx + 2 };
-  }
-  if (firstByte === '$') {
-    const len = parseInt(buf.slice(1, endIdx));
-    if (len === -1) return { value: null, consumed: endIdx + 2 };
-    const dataEnd = endIdx + 2 + len + 2;
-    if (buf.length < dataEnd) return null;
-    return { value: buf.slice(endIdx + 2, endIdx + 2 + len), consumed: dataEnd };
-  }
-  if (firstByte === '*') {
-    const len = parseInt(buf.slice(1, endIdx));
-    if (len === -1) return { value: null, consumed: endIdx + 2 };
-    // simplified — return array
-    return { value: [], consumed: endIdx + 2 };
-  }
-  return { value: buf.slice(0, endIdx), consumed: endIdx + 2 };
+  // لا يُستخدم — الـ parsing في redis-client.mjs الآن
+  return null;
 }
 
 function authMiddleware(options = {}) {

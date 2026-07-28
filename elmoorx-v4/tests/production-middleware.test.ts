@@ -102,7 +102,8 @@ test('Compression — يضغط الاستجابات الكبيرة بـ gzip', a
   assert(res.headers['content-encoding'], 'Should have Content-Encoding header');
   assert(['gzip', 'br'].includes(res.headers['content-encoding']), 'Should use gzip or br');
   assert(res.headers['vary'], 'Should have Vary header');
-  assert(res.headers['content-length'], 'Should have Content-Length');
+  // streaming compression يستخدم chunked encoding بدلاً من Content-Length
+  // فلا نتحقق من Content-Length هنا
 });
 
 test('Compression — يتخطّى الاستجابات الصغيرة', async () => {

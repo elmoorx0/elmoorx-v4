@@ -171,7 +171,7 @@ function removeTypeDeclarations(code) {
 
 function removeTypeAnnotations(code) {
   // : Type في تعريف الدالة أو المتغير — احذف حتى نصل إلى , أو ) أو = أو ;
-  // لا نحذف الأنواع داخل object literals (مثل { key: value })
+  // داخل object literals { key: value } — لا نحذف أبداً (القيمة ليست نوعاً)
   let result = '';
   let i = 0;
   const n = code.length;
@@ -179,6 +179,10 @@ function removeTypeAnnotations(code) {
   let braceDepth = 0;
   let parenDepth = 0;
   let bracketDepth = 0;
+  // نتتبع: هل الـ { الحالي هو object literal؟
+  // نعرف ذلك بالنظر لما قبل الـ {: إذا كان = أو , أو ( أو [ أو return أو =>
+  // فإنه object literal. إذا كان ) أو اسم type/interface/class فإنه type block.
+  const braceStack = []; // 'object' | 'type' | 'block' | 'class'
 
   while (i < n) {
     const ch = code[i];
@@ -191,79 +195,168 @@ function removeTypeAnnotations(code) {
     }
     if (ch === '"' || ch === "'" || ch === '`') { inString = ch; result += ch; i++; continue; }
 
-    if (ch === '{') braceDepth++;
-    if (ch === '}') braceDepth--;
+    // تتبع الأقواس
+    if (ch === '{') {
+      // حدّد نوع الـ block بالنظر للسياق
+      // ابحث عن آخر non-whitespace قبل {
+      let k = result.length - 1;
+      while (k >= 0 && /\s/.test(result[k])) k--;
+      const prevChar = result[k];
+      const prevWord = (() => {
+        let w = '';
+        let j = k;
+        while (j >= 0 && /[\w$]/.test(result[j])) { w = result[j] + w; j--; }
+        return w;
+      })();
+      if (prevChar === ')' || prevChar === '>') {
+        // function body or type block after `(): {`
+        // إذا كان قبل ) كلمة مثل interface/type/class، فهو type block
+        if (['interface', 'type', 'class', 'namespace'].includes(prevWord)) {
+          braceStack.push('type');
+        } else {
+          braceStack.push('block'); // function body or block
+        }
+      } else if (prevChar === '=' || prevChar === ',' || prevChar === '(' || prevChar === '[' || prevChar === ':' || prevChar === '>' || prevChar === '?') {
+        // object literal: { ... } بعد = أو , أو ( أو [ أو : (نوع return value)
+        // أو بعد `=>` (arrow returning object)
+        // تحقق من => قبل {
+        if (prevChar === '>' && result[k - 1] === '=') {
+          braceStack.push('object');
+        } else if (prevChar === ':' || prevChar === '?') {
+          // { a: { b: 1 } } — هذا قد يكون type أو object
+          // افترض object (الأكثر شيوعاً)
+          braceStack.push('object');
+        } else {
+          braceStack.push('object');
+        }
+      } else if (['return', '=>'].includes(prevWord) || (prevChar === '>' && result[k - 1] === '=')) {
+        braceStack.push('object');
+      } else if (['interface', 'type', 'namespace'].includes(prevWord)) {
+        braceStack.push('type');
+      } else if (prevWord === 'class' || prevWord === 'extends' || prevWord === 'implements') {
+        braceStack.push('class');
+      } else {
+        // default: block (function body, if/for/while block)
+        braceStack.push('block');
+      }
+      braceDepth++;
+    }
+    if (ch === '}') {
+      braceDepth--;
+      braceStack.pop();
+    }
     if (ch === '(') parenDepth++;
     if (ch === ')') parenDepth--;
     if (ch === '[') bracketDepth++;
     if (ch === ']') bracketDepth--;
 
-    // ابحث عن ": Type" pattern
-    // لكن تجنّب object literals (حيث : يفصل المفتاح عن القيمة)
+    // ابحث عن ": Type" pattern — فقط في سياقات الأنواع
+    // سياقات الأنواع:
+    //   1. داخل () لـ function parameters (parenDepth > 0, braceDepth === 0)
+    //   2. بعد ) لـ return type
+    //   3. بعد identifier في let/const/var declaration (خارج object literal)
+    //   4. داخل class body (class property type)
+    // ليس نوعاً:
+    //   1. داخل object literal { key: value }
+    //   2. بعد label في switch (case: ...)
+
     if (ch === ':' && code[i - 1] !== ':' && code[i + 1] !== ':') {
-      // تحقق إن كان ما بعده نوع فعلاً (يبدأ بحرف كبير، أو كلمة مفتاحية للنوع، أو <، أو ( مع =>)
+      const inObjectLiteral = braceStack.length > 0 && braceStack[braceStack.length - 1] === 'object';
+      const inClassBody = braceStack.length > 0 && braceStack[braceStack.length - 1] === 'class';
+
+      // إذا كنا داخل object literal، لا نحذف `:` أبداً (القيمة ليست نوعاً)
+      if (inObjectLiteral) {
+        result += ch;
+        i++;
+        continue;
+      }
+
+      // تحقق إن كان ما بعده نوع فعلاً
       const after = code.slice(i + 1).match(/^\s*([A-Z]|\w+<|\(|\{|string|number|boolean|any|unknown|never|void|null|undefined|readonly|Promise|Array|Record|Partial|Pick|Omit|Readonly|infer)/);
       if (after) {
-        // إذا كان braceDepth > 0، فنحن داخل object literal — تحقق أكثر
-        // النمط: identifier: Type حيث Type يبدأ بحرف كبير أو كلمة مفتاحية
-        // لكن: { key: () => ... } ليس نوعاً
-        // تحقق: هل ما قبل : هو identifier أو } أو ) (يشير لـ object property)
-        let k = i - 1;
-        while (k >= 0 && /\s/.test(code[k])) k--;
-        // إذا كان ما قبل : هو } أو ) أو identifier، قد يكون object property
-        const beforeChar = code[k];
-
         // اقرأ النوع المحتمل
         let j = i + 1;
         let depth = 0;
         let hasArrow = false;
+        let hasFunctionCall = false;
+        let typeEnd = -1; // نهاية النوع الفعلي (قبل => أو { أو , أو ; أو =)
         while (j < n) {
           const cj = code[j];
-          if (cj === '<' || cj === '(' || cj === '[' || cj === '{') depth++;
-          if (cj === '>' || cj === ')' || cj === ']' || cj === '}') {
+          if (cj === '<' || cj === '(' || cj === '[') {
+            depth++;
+            if (cj === '(' && depth === 1) {
+              let pk = j - 1;
+              while (pk > i && /\s/.test(code[pk])) pk--;
+              let wordEnd = pk;
+              while (pk > i && /[\w.$]/.test(code[pk])) pk--;
+              const wordBeforeParen = code.slice(pk + 1, wordEnd + 1);
+              if (wordBeforeParen.includes('.') || /^[a-z]/.test(wordBeforeParen)) {
+                hasFunctionCall = true;
+              }
+            }
+          }
+          if (cj === ')' || cj === ']') {
             if (depth === 0) break;
             depth--;
           }
-          // اكتشف arrow function
-          if (cj === '=' && code[j + 1] === '>') { hasArrow = true; }
-          if (depth === 0 && (cj === ',' || cj === ';' || cj === '\n')) break;
-          if (depth === 0 && cj === '=' && code[j + 1] !== '>') break;
+          if (cj === '>') {
+            if (depth === 0) break;
+            depth--;
+          }
+          // اكتشف arrow function (return type) — النوع ينتهي قبل =>
+          if (cj === '=' && code[j + 1] === '>') {
+            hasArrow = true;
+            typeEnd = j;
+            break;
+          }
+          // `{` عند depth === 0 يعني بداية function body، ليس جزءاً من النوع
+          if (cj === '{' && depth === 0) {
+            typeEnd = j;
+            break;
+          }
+          if (depth === 0 && (cj === ',' || cj === ';' || cj === '\n')) {
+            typeEnd = j;
+            break;
+          }
+          if (depth === 0 && cj === '=' && code[j + 1] !== '>') {
+            typeEnd = j;
+            break;
+          }
           j++;
         }
 
-        // إذا كان فيه arrow function، فهذه ليست type annotation
-        if (hasArrow) {
+        if (typeEnd === -1) typeEnd = j;
+
+        // إذا كان فيه function call (مثل Buffer.from(...))، فهذه قيمة وليست نوعاً
+        if (hasFunctionCall) {
           result += ch;
           i++;
           continue;
         }
 
-        // إذا كنا داخل object literal وbeforeChar هو } أو ) أو حرف/رقم أو "
-        // فقد تكون object property — لا نحذف
-        if (braceDepth > 0 && (beforeChar === '}' || beforeChar === ')' || beforeChar === '"' || beforeChar === ']' || /\w/.test(beforeChar))) {
-          // تحقق إضافي: هل الكلمة المباشرة قبل : تبدأ بحرف صغير؟ (identifier = property name)
-          let wordStart = k;
-          while (wordStart >= 0 && /[\w$]/.test(code[wordStart])) wordStart--;
-          wordStart++;
-          const word = code.slice(wordStart, k + 1);
-          // إذا كانت الكلمة تبدأ بحرف صغير وتليها : وقيمة، فهي property
-          // فقط احذف إذا كانت القيمة تبدأ بنوع واضح (مثل string, number, Promise<>, إلخ)
-          const typeStart = code.slice(i + 1).match(/^\s*(\w+)/);
-          const typeWord = typeStart ? typeStart[1] : '';
-          const typeKeywords = ['string', 'number', 'boolean', 'any', 'unknown', 'never', 'void', 'null', 'undefined', 'readonly', 'Promise', 'Array', 'Record', 'Partial', 'Pick', 'Omit', 'Readonly', 'infer'];
-          if (typeKeywords.includes(typeWord) || /^[A-Z]/.test(typeWord)) {
-            // يبدو كنوع فعلاً
-            i = j;
+        // داخل class body: قد تكون type annotation للـ property
+        if (inClassBody) {
+          let k = i - 1;
+          while (k >= 0 && /\s/.test(code[k])) k--;
+          let wordEnd = k;
+          while (k >= 0 && /[\w$]/.test(code[k])) k--;
+          const word = code.slice(k + 1, wordEnd + 1);
+          if (word && /^[a-z_$]/.test(word)) {
+            // احذف النوع مع الحفاظ على مسافة قبل = أو {
+            if (code[typeEnd] === '=' || code[typeEnd] === '{') {
+              result += ' ';
+            }
+            i = typeEnd;
             continue;
           }
-          // ليست نوع — تجنّب الحذف
-          result += ch;
-          i++;
-          continue;
         }
 
         // خارج object literal — احذف النوع
-        i = j;
+        // احفظ مسافة قبل = أو { أو =>
+        if (code[typeEnd] === '=' || code[typeEnd] === '{') {
+          result += ' ';
+        }
+        i = typeEnd;
         continue;
       }
     }
@@ -276,8 +369,60 @@ function removeTypeAnnotations(code) {
 
 function removeAsCasts(code) {
   // x as T → x  (including `as const`)
-  return code.replace(/\bas\s+const\b/g, '')
-    .replace(/\bas\s+([A-Z]\w*(?:\.[A-Z]\w*)*(?:<[^>]*>)?|\{\s*\})/g, '');
+  // يجب أن نتجنّب الـ strings والـ comments
+  let result = '';
+  let i = 0;
+  const n = code.length;
+  let inString = null;
+  let inComment = null;
+
+  while (i < n) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    // تعامل مع strings
+    if (inString) {
+      result += ch;
+      if (ch === '\\') { result += next; i += 2; continue; }
+      if (ch === inString) inString = null;
+      i++;
+      continue;
+    }
+    if (inComment) {
+      result += ch;
+      if (inComment === '//' && ch === '\n') inComment = null;
+      if (inComment === '/*' && ch === '*' && next === '/') { result += '/'; i += 2; inComment = null; continue; }
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') { inComment = '//'; result += ch + next; i += 2; continue; }
+    if (ch === '/' && next === '*') { inComment = '/*'; result += ch + next; i += 2; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; result += ch; i++; continue; }
+
+    // تحقق من `as Type` pattern
+    if (ch === 'a' && code.slice(i, i + 2) === 'as' && (i === 0 || !/\w/.test(code[i - 1]))) {
+      const afterPos = i + 2;
+      // تأكد أن ما بعد `as` هو whitespace
+      if (code[afterPos] === ' ' || code[afterPos] === '\t') {
+        // تحقق إن كان `as const`
+        const rest = code.slice(afterPos).match(/^\s+const\b/);
+        if (rest) {
+          i = afterPos + rest[0].length;
+          continue;
+        }
+        // تحقق إن كان نوع يبدأ بحرف كبير أو { أو generic
+        const typeMatch = code.slice(afterPos).match(/^\s+([A-Z]\w*(?:\.[A-Z]\w*)*(?:<[^>]*>)?|\{\s*\})/);
+        if (typeMatch) {
+          i = afterPos + typeMatch[0].length;
+          continue;
+        }
+      }
+    }
+
+    result += ch;
+    i++;
+  }
+  return result;
 }
 
 function removeAngleBracketAssertions(code) {
